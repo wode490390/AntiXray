@@ -208,6 +208,8 @@ public class WorldHandler {
                                                 ids[index] = 1;
                                                 break;
                                         }
+                                    } else {
+                                        continue;
                                     }
                                     if (this.level.getBlockDataAt(x, y, z) != 0) {
                                         blockData.set(index, (byte) 0);
@@ -297,6 +299,8 @@ public class WorldHandler {
                                     blocks[i] = 1;
                                     break;
                             }
+                        } else {
+                            continue;
                         }
                         if (this.level.getBlockDataAt(x, y, z) != 0) {
                             int i2 = (cx << 10) | (cz << 6) | (y >> 1);
@@ -382,6 +386,8 @@ public class WorldHandler {
                                     blocks[i] = 1;
                                     break;
                             }
+                        } else {
+                            continue;
                         }
                         if (this.level.getBlockDataAt(x, y, z) != 0) {
                             int i2 = (cx << 10) | (cz << 6) | (y >> 1);
