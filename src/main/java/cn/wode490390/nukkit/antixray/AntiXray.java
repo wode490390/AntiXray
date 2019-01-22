@@ -136,8 +136,11 @@ public class AntiXray extends PluginBase implements Listener {
                     v.add(0, 0, 1),
                     v.add(0, 0, -1)
             }) {
-                int x = b.getFloorX();
                 int y = b.getFloorY();
+                if (y > 255 || y < 0) {
+                    continue;
+                }
+                int x = b.getFloorX();
                 int z = b.getFloorZ();
                 UpdateBlockPacket d = new UpdateBlockPacket();
                 try {
