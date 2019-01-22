@@ -58,7 +58,7 @@
             </plugin>
         </plugins>
         <defaultGoal>clean package</defaultGoal>
-        <finalName>wodeAntiXray-v${version}</finalName>
+        <finalName>wodeAntiXray-v${project.version}</finalName>
         <resources>
             <resource>
                 <targetPath>.</targetPath>
