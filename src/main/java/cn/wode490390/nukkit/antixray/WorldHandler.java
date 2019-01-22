@@ -274,7 +274,6 @@ public class WorldHandler {
                 extraData.putLShort(extra.get(key));
             }
         }
-        BinaryStream s = ThreadCache.binaryStream.get().reset();
         byte[] blocks = chunk.getBlockIdArray();
         byte[] data = chunk.getBlockDataArray();
         for (int cx = 0; cx < 16; cx++) {
@@ -315,6 +314,7 @@ public class WorldHandler {
                 }
             }
         }
+        BinaryStream s = ThreadCache.binaryStream.get().reset();
         s.put(blocks);
         s.put(data);
         s.put(chunk.getBlockSkyLightArray());
@@ -361,7 +361,6 @@ public class WorldHandler {
                 extraData.putLShort(entry.getValue());
             }
         }
-        BinaryStream s = ThreadCache.binaryStream.get().reset();
         byte[] blocks = chunk.getBlockIdArray();
         byte[] data = chunk.getBlockDataArray();
         for (int cx = 0; cx < 16; cx++) {
@@ -402,6 +401,7 @@ public class WorldHandler {
                 }
             }
         }
+        BinaryStream s = ThreadCache.binaryStream.get().reset();
         s.put(blocks);
         s.put(data);
         s.put(chunk.getBlockSkyLightArray());
