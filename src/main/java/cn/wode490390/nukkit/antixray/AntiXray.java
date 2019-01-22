@@ -6,6 +6,7 @@ import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
 import cn.nukkit.event.block.BlockUpdateEvent;
 import cn.nukkit.event.player.PlayerChunkRequestEvent;
+import cn.nukkit.level.GlobalBlockPalette;
 import cn.nukkit.level.Level;
 import cn.nukkit.level.Position;
 import cn.nukkit.math.Vector3;
@@ -126,20 +127,40 @@ public class AntiXray extends PluginBase implements Listener {
         Position v = e.getBlock();
         Level l = v.getLevel();
         if (this.worlds.contains(l.getName())) {
-            Set<Player> s = new HashSet<>(l.getChunkPlayers(v.getFloorX() >> 4, v.getFloorZ() >> 4).values());
-            for (Player p : new HashSet<>(s)) {
-                if (p.hasPermission(PERMISSION_WHITELIST)) {
-                    s.remove(p);
-                }
-            }
-            l.sendBlocks(s.toArray(new Player[s.size()]), new Vector3[]{
+            List<UpdateBlockPacket> a = new ArrayList<>();
+            for (Vector3 b : new Vector3[]{
                     v.add(1),
                     v.add(-1),
                     v.add(0, 1),
                     v.add(0, -1),
                     v.add(0, 0, 1),
                     v.add(0, 0, -1)
-            }, UpdateBlockPacket.FLAG_ALL_PRIORITY);
+            }) {
+                int x = b.getFloorX();
+                int y = b.getFloorY();
+                int z = b.getFloorZ();
+                UpdateBlockPacket d = new UpdateBlockPacket();
+                try {
+                    d.blockRuntimeId = GlobalBlockPalette.getOrCreateRuntimeId(l.getFullBlock(x, y, z));
+                } catch (Exception t) {
+                    continue;
+                }
+                d.x = x;
+                d.y = y;
+                d.z = z;
+                d.flags = UpdateBlockPacket.FLAG_ALL_PRIORITY;
+                a.add(d);
+            }
+            int n = a.size();
+            if (n > 0) {
+                Set<Player> s = new HashSet<>(l.getChunkPlayers(v.getFloorX() >> 4, v.getFloorZ() >> 4).values());
+                for (Player p : new HashSet<>(s)) {
+                    if (p.hasPermission(PERMISSION_WHITELIST)) {
+                        s.remove(p);
+                    }
+                }
+                this.getServer().batchPackets(s.toArray(new Player[s.size()]), a.toArray(new UpdateBlockPacket[n]));
+            }
         }
     }
 
