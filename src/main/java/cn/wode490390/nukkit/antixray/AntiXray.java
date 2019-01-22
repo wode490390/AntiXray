@@ -148,7 +148,7 @@ public class AntiXray extends PluginBase implements Listener {
                 } catch (Exception t) {
                     try {
                         d.blockRuntimeId = GlobalBlockPalette.getOrCreateRuntimeId(l.getBlockIdAt(x, y, z), 0);
-                    } catch (Exception t) {
+                    } catch (Exception n) {
                         continue;
                     }
                 }
