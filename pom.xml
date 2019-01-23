@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>cn.wode490390.nukkit</groupId>
     <artifactId>antixray</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <packaging>jar</packaging>
     <name>AntiXray</name>
     <description>Anti X-Ray cheat plugin for Nukkit</description>
@@ -58,7 +58,7 @@
             </plugin>
         </plugins>
         <defaultGoal>clean package</defaultGoal>
-        <finalName>wodeAntiXray-v${version}</finalName>
+        <finalName>wodeAntiXray-v${project.version}</finalName>
         <resources>
             <resource>
                 <targetPath>.</targetPath>

@@ -208,6 +208,8 @@ public class WorldHandler {
                                                 ids[index] = 1;
                                                 break;
                                         }
+                                    } else {
+                                        continue;
                                     }
                                     if (this.level.getBlockDataAt(x, y, z) != 0) {
                                         blockData.set(index, (byte) 0);
@@ -272,7 +274,6 @@ public class WorldHandler {
                 extraData.putLShort(extra.get(key));
             }
         }
-        BinaryStream s = ThreadCache.binaryStream.get().reset();
         byte[] blocks = chunk.getBlockIdArray();
         byte[] data = chunk.getBlockDataArray();
         for (int cx = 0; cx < 16; cx++) {
@@ -297,6 +298,8 @@ public class WorldHandler {
                                     blocks[i] = 1;
                                     break;
                             }
+                        } else {
+                            continue;
                         }
                         if (this.level.getBlockDataAt(x, y, z) != 0) {
                             int i2 = (cx << 10) | (cz << 6) | (y >> 1);
@@ -311,6 +314,7 @@ public class WorldHandler {
                 }
             }
         }
+        BinaryStream s = ThreadCache.binaryStream.get().reset();
         s.put(blocks);
         s.put(data);
         s.put(chunk.getBlockSkyLightArray());
@@ -357,7 +361,6 @@ public class WorldHandler {
                 extraData.putLShort(entry.getValue());
             }
         }
-        BinaryStream s = ThreadCache.binaryStream.get().reset();
         byte[] blocks = chunk.getBlockIdArray();
         byte[] data = chunk.getBlockDataArray();
         for (int cx = 0; cx < 16; cx++) {
@@ -382,6 +385,8 @@ public class WorldHandler {
                                     blocks[i] = 1;
                                     break;
                             }
+                        } else {
+                            continue;
                         }
                         if (this.level.getBlockDataAt(x, y, z) != 0) {
                             int i2 = (cx << 10) | (cz << 6) | (y >> 1);
@@ -396,6 +401,7 @@ public class WorldHandler {
                 }
             }
         }
+        BinaryStream s = ThreadCache.binaryStream.get().reset();
         s.put(blocks);
         s.put(data);
         s.put(chunk.getBlockSkyLightArray());
