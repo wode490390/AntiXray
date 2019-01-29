@@ -8,5 +8,5 @@ api: ["1.0.0"]
 load: POSTWORLD
 permissions:
   antixray.whitelist:
-    description: "Allow player to cheat with X-Ray"
+    description: "Allows player to cheat with X-Ray"
     default: op
