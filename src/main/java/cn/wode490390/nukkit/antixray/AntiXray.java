@@ -103,12 +103,6 @@ public class AntiXray extends PluginBase implements Listener {
         }
         if (!this.worlds.isEmpty() && !this.ores.isEmpty()) {
             this.getServer().getPluginManager().registerEvents(this, this);
-            for (String w : this.worlds) {
-                Level l = this.getServer().getLevelByName(w);
-                if (l != null) {
-                    this.handlers.putIfAbsent(l, new WorldHandler(l));
-                }
-            }
         }
     }
 
@@ -118,6 +112,7 @@ public class AntiXray extends PluginBase implements Listener {
         Level l = p.getLevel();
         if (!p.hasPermission(PERMISSION_WHITELIST) && this.worlds.contains(l.getName()) && p.getLoaderId() > 0) {
             e.setCancelled();
+            this.handlers.putIfAbsent(l, new WorldHandler(l));
             this.handlers.get(l).requestChunk(e.getChunkX(), e.getChunkZ(), p);
         }
     }
