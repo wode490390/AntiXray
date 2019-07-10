@@ -3,35 +3,27 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>cn.wode490390.nukkit</groupId>
     <artifactId>antixray</artifactId>
-    <version>1.0.2</version>
-    <packaging>jar</packaging>
+    <version>1.0.3</version>
     <name>AntiXray</name>
     <description>Anti X-Ray cheat plugin for Nukkit</description>
-    <url>http://wode490390.cn/</url>
     <inceptionYear>2018</inceptionYear>
-    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <project.build.number>SNAPSHOT</project.build.number>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-    </properties>
+    <url>http://wode490390.cn/</url>
+    <packaging>jar</packaging>
     <licenses>
         <license>
             <name>GNU General Public License, Version 3.0</name>
             <url>http://www.gnu.org/licenses/gpl.html</url>
+            <distribution>repo</distribution>
         </license>
     </licenses>
-    <developers>
-        <developer>
-            <name>wode490390</name>
-            <email>wode490390@qq.com</email>
-            <organization>wodeTeam</organization>
-            <organizationUrl>http://wode490390.cn/</organizationUrl>
-        </developer>
-    </developers>  
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+    </properties>
     <repositories>
         <repository>
-            <id>nukkitx-repo</id>
+            <id>nukkitx</id>
             <url>http://repo.nukkitx.com/main/</url>
         </repository>
     </repositories>
@@ -44,21 +36,8 @@
         </dependency>
     </dependencies>
     <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.8.0</version>
-                <configuration>
-                    <source>1.8</source>
-                    <target>1.8</target>
-                    <encoding>UTF-8</encoding>
-                    <showDeprecation>true</showDeprecation>
-                </configuration>
-            </plugin>
-        </plugins>
         <defaultGoal>clean package</defaultGoal>
-        <finalName>wodeAntiXray-v${project.version}</finalName>
+        <finalName>wodeAntiXray-${project.version}</finalName>
         <resources>
             <resource>
                 <targetPath>.</targetPath>

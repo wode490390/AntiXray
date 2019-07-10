@@ -10,19 +10,19 @@ Please see [mcbbs](http://www.mcbbs.net/thread-838490-1-1.html) for more informa
 | antixray.whitelist | Allow player to cheat with X-Ray |
 ## config.yml
 ```yaml
-#The smaller the value, the higher the performance (1-255)
-scan-height-limit: 255
-#Save a serialized copy of the chunk in memory for faster sending
-cache-chunks: false
-#Set this to false to use hidden mode (default)
-obfuscator-mode: false
-#The fake block is used to replace ores in different dimensions (hidden mode only)
+# The smaller the value, the higher the performance (1~255)
+scan-height-limit: 64
+# Save a serialized copy of the chunk in memory for faster sending
+cache-chunks: true
+# Set this to false to use hidden mode
+obfuscator-mode: true
+# The fake block is used to replace ores in different dimensions (hidden mode only)
 overworld-fake-block: 1
 nether-fake-block: 87
-#Worlds that need to be protected
+# Worlds that need to be protected
 protect-worlds:
   - "world"
-#Blocks that need to be hidden
+# Blocks that need to be hidden
 ores:
   - 14
   - 15
@@ -33,7 +33,7 @@ ores:
   - 74
   - 129
   - 153
-#Such as transparent blocks and non-full blocks
+# Such as transparent blocks and non-full blocks
 filters:
   - 0
   - 6

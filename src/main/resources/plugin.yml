@@ -4,7 +4,7 @@ author: "wode490390"
 description: "Anti X-Ray cheat plugin for Nukkit"
 website: "http://wode490390.cn/"
 version: "${pom.version}"
-api: ["1.0.0"]
+api: ["1.0.7"]
 load: POSTWORLD
 permissions:
   antixray.whitelist:
