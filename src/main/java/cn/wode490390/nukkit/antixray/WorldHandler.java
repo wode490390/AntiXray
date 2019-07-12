@@ -8,7 +8,6 @@ import cn.nukkit.level.format.LevelProvider;
 import cn.nukkit.level.format.anvil.Anvil;
 import cn.nukkit.level.format.anvil.Chunk;
 import cn.nukkit.level.format.anvil.util.BlockStorage;
-import cn.nukkit.level.format.anvil.util.NibbleArray;
 import cn.nukkit.level.format.generic.BaseFullChunk;
 import cn.nukkit.level.format.leveldb.LevelDB;
 import cn.nukkit.level.format.mcregion.McRegion;
@@ -34,11 +33,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 
 class WorldHandler extends NukkitRunnable {
 
-    private static final byte[] PAD_256 = new byte[256];
     private static final byte[] EMPTY_SECTION = new byte[6144];
 
     private final Map<Long, Int2ObjectMap<Player>> chunkSendQueue = new ConcurrentHashMap<>();
@@ -191,7 +188,7 @@ class WorldHandler extends NukkitRunnable {
                 break;
             }
         }
-        BinaryStream stream = new BinaryStream();
+        BinaryStream stream = new BinaryStream(new byte[771]).reset();
         stream.putByte((byte) count);
         for (int i = 0; i < count; i++) {
             stream.putByte((byte) 0);
@@ -206,21 +203,30 @@ class WorldHandler extends NukkitRunnable {
                     field.setInt(f, f.getModifiers() & ~Modifier.FINAL);
                     f.setAccessible(true);
                     BlockStorage storage = (BlockStorage) f.get(section);
-                    byte[] ids = storage.getBlockIds();
-                    byte[] data = new byte[storage.getBlockData().length];
-                    System.arraycopy(storage.getBlockData(), 0, data, 0, data.length);
-                    NibbleArray blockData = new NibbleArray(data);
-                    for (int cx = 0; cx < 16; cx++) {
-                        for (int cz = 0; cz < 16; cz++) {
-                            for (int cy = 0; cy < 16; cy++) {
-                                int x = (chunkX << 4) + cx;
-                                int y = (section.getY() << 4) + cy;
-                                int z = (chunkZ << 4) + cz;
-                                if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
-                                    int index = (cx << 8) + (cz << 4) + cy;
+                    byte[] blocks = storage.getBlockIds();
+                    byte[] ids = new byte[4096];
+                    System.arraycopy(blocks, 0, ids, 0, 4096);
+                    byte[] blockData = storage.getBlockData();
+                    byte[] data = new byte[2048];
+                    System.arraycopy(blockData, 0, data, 0, 2048);
+                    for (int cx = 1; cx < 15; cx++) {
+                        int tx = cx << 8;
+                        for (int cz = 1; cz < 15; cz++) {
+                            int tz = cz << 4;
+                            int xz = tx + tz;
+                            for (int cy = 1; cy < 15; cy++) {
+                                int xy = tx + cy;
+                                int zy = tz + cy;
+                                int index = xz + cy;
+                                if (!this.antixray.filters.contains((int) ((byte) (blocks[((cx + 1) << 8) + zy] & 0xff)))
+                                        && !this.antixray.filters.contains((int) ((byte) (blocks[((cx - 1) << 8) + zy] & 0xff)))
+                                        && !this.antixray.filters.contains((int) ((byte) (blocks[xy + ((cz + 1) << 4)] & 0xff)))
+                                        && !this.antixray.filters.contains((int) ((byte) (blocks[xy + ((cz - 1) << 4)] & 0xff)))
+                                        && !this.antixray.filters.contains((int) ((byte) (blocks[index + 1] & 0xff)))
+                                        && !this.antixray.filters.contains((int) ((byte) (blocks[index - 1] & 0xff)))) {
                                     if (this.antixray.mode) {
-                                        ids[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
-                                    } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
+                                        ids[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
+                                    } else if (this.antixray.ores.contains((int) ((byte) (blocks[index] & 0xff)))) {
                                         switch (this.level.getDimension()) {
                                             case Level.DIMENSION_OVERWORLD:
                                                 ids[index] = (byte) (this.antixray.fake_o & 0xff);
@@ -230,22 +236,25 @@ class WorldHandler extends NukkitRunnable {
                                                 break;
                                             case Level.DIMENSION_THE_END:
                                             default:
-                                                ids[index] = 1;
+                                                ids[index] = 0;
                                                 break;
                                         }
                                     } else {
                                         continue;
                                     }
-                                    if (this.level.getBlockDataAt(x, y, z) != 0) {
-                                        blockData.set(index, (byte) 0);
+                                    int halfIndex = index / 2;
+                                    byte nibbleData = data[halfIndex];
+                                    boolean flag = (index & 1) == 0;
+                                    if ((flag ? nibbleData & 0xf : (nibbleData & 0xf0) >>> 4) != 0) {
+                                        data[halfIndex] = flag ? (byte) (nibbleData & 0xf0) : (byte) (nibbleData & 0xf);
                                     }
                                 }
                             }
                         }
                     }
-                    byte[] merged = new byte[ids.length + data.length];
-                    System.arraycopy(ids, 0, merged, 0, ids.length);
-                    System.arraycopy(data, 0, merged, ids.length, data.length);
+                    byte[] merged = new byte[6144];
+                    System.arraycopy(ids, 0, merged, 0, 4096);
+                    System.arraycopy(data, 0, merged, 4096, 2048);
                     stream.put(merged);
                 } catch (Exception e) {
                     stream.put(section.getBytes());
@@ -254,12 +263,10 @@ class WorldHandler extends NukkitRunnable {
                 stream.put(section.getBytes());
             }
         }
-        for (byte height : chunk.getHeightMapArray()) {
-            stream.putByte(height);
-        }
-        stream.put(PAD_256);
-        stream.put(chunk.getBiomeIdArray());
-        stream.putByte((byte) 0);
+        byte[] merged = new byte[769];
+        System.arraycopy(chunk.getHeightMapArray(), 0, merged, 0, 256);
+        System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 512, 256);
+        stream.put(merged);
         if (extraData != null) {
             stream.put(extraData.getBuffer());
         } else {
@@ -297,20 +304,32 @@ class WorldHandler extends NukkitRunnable {
                 extraData.putLShort(extra.get(key));
             }
         }
-        byte[] blocks = new byte[chunk.getBlockIdArray().length];
-        System.arraycopy(chunk.getBlockIdArray(), 0, blocks, 0, blocks.length);
-        byte[] data = new byte[chunk.getBlockDataArray().length];
-        System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, data.length);
-        for (int cx = 0; cx < 16; cx++) {
-            for (int cz = 0; cz < 16; cz++) {
-                for (int y = 0; y <= this.antixray.height; y++) {
-                    int x = (chunkX << 4) + cx;
-                    int z = (chunkZ << 4) + cz;
-                    if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
-                        int index = (cx << 11) | (cz << 7) | y;
+        byte[] blocks = chunk.getBlockIdArray();
+        byte[] ids = new byte[32768];
+        System.arraycopy(blocks, 0, ids, 0, 32768);
+        byte[] data = new byte[16384];
+        System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, 16384);
+        for (int cx = 1; cx < 15; cx++) {
+            int tx = cx << 11;
+            int dtx = cx << 10;
+            for (int cz = 1; cz < 15; cz++) {
+                int tz = cz << 7;
+                int dtz = cz << 6;
+                int xz = tx | tz;
+                int dxz = dtx | dtz;
+                for (int y = 1; y <= this.antixray.height && y < 255; y++) {
+                    int xy = tx | y;
+                    int zy = tz | y;
+                    if (!this.antixray.filters.contains(blocks[((cx + 1) << 11) | zy] & 0xff)
+                            && !this.antixray.filters.contains(blocks[((cx - 1) << 11) | zy] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xy | ((cz + 1) << 7)] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xy | ((cz - 1) << 7)] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xz | (y + 1)] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
+                        int index = xz | y;
                         if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
-                        } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
+                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
+                        } else if (this.antixray.ores.contains(blocks[index] & 0xff)) {
                             switch (this.level.getDimension()) {
                                 case Level.DIMENSION_OVERWORLD:
                                     blocks[index] = (byte) (this.antixray.fake_o & 0xff);
@@ -320,32 +339,30 @@ class WorldHandler extends NukkitRunnable {
                                     break;
                                 case Level.DIMENSION_THE_END:
                                 default:
-                                    blocks[index] = 1;
+                                    blocks[index] = 0;
                                     break;
                             }
                         } else {
                             continue;
                         }
-                        if (this.level.getBlockDataAt(x, y, z) != 0) {
-                            int dataIndex = (cx << 10) | (cz << 6) | (y >> 1);
-                            int old = data[dataIndex] & 0xff;
-                            if ((y & 1) == 0) {
-                                data[dataIndex] = (byte) (old & 0xf0);
-                            } else {
-                                data[dataIndex] = (byte) (old & 0x0f);
-                            }
+                        int dataIndex = dxz | (y >> 1);
+                        int blockData = data[dataIndex] & 0xff;
+                        boolean flag = (y & 1) == 0;
+                        if ((flag ? data[dataIndex] & 0xf : data[dataIndex] >> 4) != 0) {
+                            data[dataIndex] = flag ? (byte) (blockData & 0xf0) : (byte) (blockData & 0xf);
                         }
                     }
                 }
             }
         }
-        BinaryStream stream = new BinaryStream();
-        stream.put(blocks);
-        stream.put(data);
-        stream.put(chunk.getBlockSkyLightArray());
-        stream.put(chunk.getBlockLightArray());
-        stream.put(chunk.getHeightMapArray());
-        stream.put(chunk.getBiomeIdArray());
+        byte[] merged = new byte[82432];
+        System.arraycopy(blocks, 0, merged, 0, 32768);
+        System.arraycopy(data, 0, merged, 32768, 16384);
+        System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49152, 16384);
+        System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65536, 16384);
+        System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81920, 256);
+        System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82176, 256);
+        BinaryStream stream = new BinaryStream(merged);
         if (extraData != null) {
             stream.put(extraData.getBuffer());
         } else {
@@ -383,20 +400,32 @@ class WorldHandler extends NukkitRunnable {
                 extraData.putLShort(entry.getValue());
             }
         }
-        byte[] blocks = new byte[chunk.getBlockIdArray().length];
-        System.arraycopy(chunk.getBlockIdArray(), 0, blocks, 0, blocks.length);
-        byte[] data = new byte[chunk.getBlockDataArray().length];
-        System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, data.length);
-        for (int cx = 0; cx < 16; cx++) {
-            for (int cz = 0; cz < 16; cz++) {
-                for (int y = 0; y <= this.antixray.height; y++) {
-                    int x = (chunkX << 4) + cx;
-                    int z = (chunkZ << 4) + cz;
-                    if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
-                        int index = (cx << 11) | (cz << 7) | y;
+        byte[] blocks = chunk.getBlockIdArray();
+        byte[] ids = new byte[32768];
+        System.arraycopy(blocks, 0, ids, 0, 32768);
+        byte[] data = new byte[16384];
+        System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, 16384);
+        for (int cx = 1; cx < 15; cx++) {
+            int tx = cx << 11;
+            int dtx = cx << 10;
+            for (int cz = 1; cz < 15; cz++) {
+                int tz = cz << 7;
+                int dtz = cz << 6;
+                int xz = tx | tz;
+                int dxz = dtx | dtz;
+                for (int y = 1; y <= this.antixray.height && y < 255; y++) {
+                    int xy = tx | y;
+                    int zy = tz | y;
+                    if (!this.antixray.filters.contains(blocks[((cx + 1) << 11) | zy] & 0xff)
+                            && !this.antixray.filters.contains(blocks[((cx - 1) << 11) | zy] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xy | ((cz + 1) << 7)] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xy | ((cz - 1) << 7)] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xz | (y + 1)] & 0xff)
+                            && !this.antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
+                        int index = xz | y;
                         if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
-                        } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
+                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
+                        } else if (this.antixray.ores.contains(blocks[index] & 0xff)) {
                             switch (this.level.getDimension()) {
                                 case Level.DIMENSION_OVERWORLD:
                                     blocks[index] = (byte) (this.antixray.fake_o & 0xff);
@@ -406,32 +435,30 @@ class WorldHandler extends NukkitRunnable {
                                     break;
                                 case Level.DIMENSION_THE_END:
                                 default:
-                                    blocks[index] = 1;
+                                    blocks[index] = 0;
                                     break;
                             }
                         } else {
                             continue;
                         }
-                        if (this.level.getBlockDataAt(x, y, z) != 0) {
-                            int dataIndex = (cx << 10) | (cz << 6) | (y >> 1);
-                            int old = data[dataIndex] & 0xff;
-                            if ((y & 1) == 0) {
-                                data[dataIndex] = (byte) (old & 0xf0);
-                            } else {
-                                data[dataIndex] = (byte) (old & 0x0f);
-                            }
+                        int dataIndex = dxz | (y >> 1);
+                        int blockData = data[dataIndex] & 0xff;
+                        boolean flag = (y & 1) == 0;
+                        if ((flag ? data[dataIndex] & 0xf : data[dataIndex] >> 4) != 0) {
+                            data[dataIndex] = flag ? (byte) (blockData & 0xf0) : (byte) (blockData & 0xf);
                         }
                     }
                 }
             }
         }
-        BinaryStream stream = new BinaryStream();
-        stream.put(blocks);
-        stream.put(data);
-        stream.put(chunk.getBlockSkyLightArray());
-        stream.put(chunk.getBlockLightArray());
-        stream.put(chunk.getHeightMapArray());
-        stream.put(chunk.getBiomeIdArray());
+        byte[] merged = new byte[82432];
+        System.arraycopy(blocks, 0, merged, 0, 32768);
+        System.arraycopy(data, 0, merged, 32768, 16384);
+        System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49152, 16384);
+        System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65536, 16384);
+        System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81920, 256);
+        System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82176, 256);
+        BinaryStream stream = new BinaryStream(merged);
         if (extraData != null) {
             stream.put(extraData.getBuffer());
         } else {
