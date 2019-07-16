@@ -34,11 +34,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 
 class WorldHandler extends NukkitRunnable {
 
-    private static final byte[] PAD_256 = new byte[256];
     private static final byte[] EMPTY_SECTION = new byte[6144];
 
     private final Map<Long, Int2ObjectMap<Player>> chunkSendQueue = new ConcurrentHashMap<>();
@@ -58,7 +56,7 @@ class WorldHandler extends NukkitRunnable {
         this.level = level;
         this.antixray = antixray;
         this.timings = new AntiXrayTimings(this.level);
-        if (this.antixray.cache) {
+        if (this.antixray.memoryCache) {
             this.caches = new ConcurrentHashMap<>();
         }
         this.maxSectionY = this.antixray.height >> 4;
@@ -132,11 +130,11 @@ class WorldHandler extends NukkitRunnable {
         }
     }
 
-    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, byte[] payload) {
+    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload) {
         this.timings.ChunkSendTimer.startTiming();
         long index = Level.chunkHash(chunkX, chunkZ);
-        if (this.antixray.cache) {
-            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, payload);
+        if (this.antixray.memoryCache) {
+            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, subChunkCount, payload);
             BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ, false);
             if (chunk != null && chunk.getChanges() <= timestamp) {
                 this.caches.put(index, new Entry(timestamp, packet));
@@ -148,7 +146,7 @@ class WorldHandler extends NukkitRunnable {
         if (this.chunkSendTasks.contains(index)) {
             this.chunkSendQueue.get(index).values().parallelStream()
                     .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                    .forEach(player -> player.sendChunk(chunkX, chunkZ, payload));
+                    .forEach(player -> player.sendChunk(chunkX, chunkZ, subChunkCount, payload));
             this.chunkSendQueue.remove(index);
             this.chunkSendTasks.remove(index);
         }
@@ -192,7 +190,6 @@ class WorldHandler extends NukkitRunnable {
             }
         }
         BinaryStream stream = new BinaryStream();
-        stream.putByte((byte) count);
         for (int i = 0; i < count; i++) {
             stream.putByte((byte) 0);
             ChunkSection section = sections[i];
@@ -209,6 +206,17 @@ class WorldHandler extends NukkitRunnable {
                     byte[] ids = storage.getBlockIds();
                     byte[] data = new byte[storage.getBlockData().length];
                     System.arraycopy(storage.getBlockData(), 0, data, 0, data.length);
+                    long hash = 0;
+                    if (this.antixray.localCache) {
+                        byte[] merged = new byte[6144];
+                        System.arraycopy(ids, 0, merged, 0, 4096);
+                        System.arraycopy(data, 0, merged, 4096, 2048);
+                        hash = this.antixray.getCacheHash(merged);
+                        if (this.antixray.hasCache(hash)) {
+                            stream.put(this.antixray.readCache(hash));
+                            continue;
+                        }
+                    }
                     NibbleArray blockData = new NibbleArray(data);
                     for (int cx = 0; cx < 16; cx++) {
                         for (int cz = 0; cz < 16; cz++) {
@@ -219,7 +227,7 @@ class WorldHandler extends NukkitRunnable {
                                 if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
                                     int index = (cx << 8) + (cz << 4) + cy;
                                     if (this.antixray.mode) {
-                                        ids[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
+                                        ids[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
                                     } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
                                         switch (this.level.getDimension()) {
                                             case Level.DIMENSION_OVERWORLD:
@@ -247,6 +255,9 @@ class WorldHandler extends NukkitRunnable {
                     System.arraycopy(ids, 0, merged, 0, ids.length);
                     System.arraycopy(data, 0, merged, ids.length, data.length);
                     stream.put(merged);
+                    if (this.antixray.localCache) {
+                        this.antixray.createCache(hash, merged);
+                    }
                 } catch (Exception e) {
                     stream.put(section.getBytes());
                 }
@@ -254,10 +265,6 @@ class WorldHandler extends NukkitRunnable {
                 stream.put(section.getBytes());
             }
         }
-        for (byte height : chunk.getHeightMapArray()) {
-            stream.putByte(height);
-        }
-        stream.put(PAD_256);
         stream.put(chunk.getBiomeIdArray());
         stream.putByte((byte) 0);
         if (extraData != null) {
@@ -266,7 +273,7 @@ class WorldHandler extends NukkitRunnable {
             stream.putVarInt(0);
         }
         stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, stream.getBuffer());
+        this.chunkRequestCallback(timestamp, chunkX, chunkZ, count, stream.getBuffer());
     }
 
     private void requestLevelDBChunkTask(int chunkX, int chunkZ) {
@@ -309,7 +316,7 @@ class WorldHandler extends NukkitRunnable {
                     if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
                         int index = (cx << 11) | (cz << 7) | y;
                         if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
+                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
                         } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
                             switch (this.level.getDimension()) {
                                 case Level.DIMENSION_OVERWORLD:
@@ -352,7 +359,7 @@ class WorldHandler extends NukkitRunnable {
             stream.putLInt(0);
         }
         stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, stream.getBuffer());
+        this.chunkRequestCallback(timestamp, chunkX, chunkZ, 16, stream.getBuffer());
     }
 
     private void requestMcRegionChunkTask(int chunkX, int chunkZ) throws ChunkException {
@@ -395,7 +402,7 @@ class WorldHandler extends NukkitRunnable {
                     if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
                         int index = (cx << 11) | (cz << 7) | y;
                         if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
+                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
                         } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
                             switch (this.level.getDimension()) {
                                 case Level.DIMENSION_OVERWORLD:
@@ -438,7 +445,7 @@ class WorldHandler extends NukkitRunnable {
             stream.putLInt(0);
         }
         stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, stream.getBuffer());
+        this.chunkRequestCallback(timestamp, chunkX, chunkZ, 16, stream.getBuffer());
     }
 
     private static class Entry {
