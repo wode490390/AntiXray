@@ -38,7 +38,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 class WorldHandler extends NukkitRunnable {
 
-    private static final byte[] PAD_256 = new byte[256];
     private static final byte[] EMPTY_SECTION = new byte[6144];
 
     private final Map<Long, Int2ObjectMap<Player>> chunkSendQueue = new ConcurrentHashMap<>();
@@ -63,7 +62,7 @@ class WorldHandler extends NukkitRunnable {
         }
         this.maxSectionY = this.antixray.height >> 4;
         this.maxSize = this.antixray.ores.size() - 1;
-        this.runTaskTimerAsynchronously(this.antixray, 0, 1);
+        this.runTaskTimer(this.antixray, 0, 1);
     }
 
     @Override
@@ -130,11 +129,11 @@ class WorldHandler extends NukkitRunnable {
         }
     }
 
-    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, byte[] payload) {
+    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload) {
         //this.timings.ChunkSendTimer.startTiming();
         long index = Level.chunkHash(chunkX, chunkZ);
         if (this.antixray.cache) {
-            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, payload);
+            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, subChunkCount, payload);
             BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ, false);
             if (chunk != null && chunk.getChanges() <= timestamp) {
                 this.caches.put(index, new Entry(timestamp, packet));
@@ -146,7 +145,7 @@ class WorldHandler extends NukkitRunnable {
         if (this.chunkSendTasks.contains(index)) {
             this.chunkSendQueue.get(index).values().parallelStream()
                     .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                    .forEach(player -> player.sendChunk(chunkX, chunkZ, payload));
+                    .forEach(player -> player.sendChunk(chunkX, chunkZ, subChunkCount, payload));
             this.chunkSendQueue.remove(index);
             this.chunkSendTasks.remove(index);
         }
@@ -166,6 +165,7 @@ class WorldHandler extends NukkitRunnable {
         private final int chunkZ;
 
         private long timestamp;
+        private int count;
         private Throwable t;
 
         private AnvilChunkRequestTask(int chunkX, int chunkZ) throws ChunkException {
@@ -204,17 +204,16 @@ class WorldHandler extends NukkitRunnable {
                     extraData.putLShort(entry.getValue());
                 }
             }
-            int count = 0;
+            this.count = 0;
             ChunkSection[] sections = chunk.getSections();
             for (int i = sections.length - 1; i >= 0; i--) {
                 if (!sections[i].isEmpty()) {
-                    count = i + 1;
+                    this.count = i + 1;
                     break;
                 }
             }
-            BinaryStream stream = new BinaryStream(new byte[771]).reset(); //1 + 256 + 256 + 256 + 1 + 1
-            stream.putByte((byte) count); //1
-            for (int i = 0; i < count; i++) {
+            BinaryStream stream = new BinaryStream(new byte[257]).reset(); //256 + 1
+            for (int i = 0; i < this.count; i++) {
                 stream.putByte((byte) 0);
                 ChunkSection section = sections[i];
                 if (section.isEmpty()) {
@@ -280,10 +279,6 @@ class WorldHandler extends NukkitRunnable {
                     stream.put(section.getBytes());
                 }
             }
-            for (byte height : chunk.getHeightMapArray()) { //256
-                stream.putByte(height);
-            }
-            stream.put(PAD_256); //256
             stream.put(chunk.getBiomeIdArray()); //256
             stream.putByte((byte) 0); //1
             if (extraData != null) {
@@ -300,7 +295,7 @@ class WorldHandler extends NukkitRunnable {
         @Override
         public void onCompletion(Server server) {
             if (this.hasResult()) {
-                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, (byte[]) this.getResult());
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, this.count, (byte[]) this.getResult());
             } else {
                 chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
@@ -398,7 +393,7 @@ class WorldHandler extends NukkitRunnable {
                     }
                 }
             }
-            BinaryStream stream = new BinaryStream(new byte[82436]).reset(); //32768 + 16384 + 16384 + 16384 + 256 + 256 + 4
+            BinaryStream stream = new BinaryStream(new byte[82432]).reset(); //32768 + 16384 + 16384 + 16384 + 256 + 256
             stream.put(blocks); //32768
             stream.put(data); //16384
             stream.put(chunk.getBlockSkyLightArray()); //16384
@@ -419,7 +414,7 @@ class WorldHandler extends NukkitRunnable {
         @Override
         public void onCompletion(Server server) {
             if (this.hasResult()) {
-                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, (byte[]) this.getResult());
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult());
             } else {
                 chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
@@ -517,7 +512,7 @@ class WorldHandler extends NukkitRunnable {
                     }
                 }
             }
-            BinaryStream stream = new BinaryStream(new byte[82436]).reset(); //32768 + 16384 + 16384 + 16384 + 256 + 256 + 4
+            BinaryStream stream = new BinaryStream(new byte[82432]).reset(); //32768 + 16384 + 16384 + 16384 + 256 + 256
             stream.put(blocks); //32768
             stream.put(data); //16384
             stream.put(chunk.getBlockSkyLightArray()); //16384
@@ -538,7 +533,7 @@ class WorldHandler extends NukkitRunnable {
         @Override
         public void onCompletion(Server server) {
             if (this.hasResult()) {
-                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, (byte[]) this.getResult());
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult());
             } else {
                 chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
