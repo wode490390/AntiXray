@@ -129,11 +129,11 @@ class WorldHandler extends NukkitRunnable {
         }
     }
 
-    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, byte[] payload) {
+    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload) {
         this.timings.ChunkSendTimer.startTiming();
         long index = Level.chunkHash(chunkX, chunkZ);
         if (this.antixray.cache) {
-            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, payload);
+            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, subChunkCount, payload);
             BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ, false);
             if (chunk != null && chunk.getChanges() <= timestamp) {
                 this.caches.put(index, new Entry(timestamp, packet));
@@ -145,7 +145,7 @@ class WorldHandler extends NukkitRunnable {
         if (this.chunkSendTasks.contains(index)) {
             this.chunkSendQueue.get(index).values().parallelStream()
                     .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                    .forEach(player -> player.sendChunk(chunkX, chunkZ, payload));
+                    .forEach(player -> player.sendChunk(chunkX, chunkZ, subChunkCount, payload));
             this.chunkSendQueue.remove(index);
             this.chunkSendTasks.remove(index);
         }
@@ -188,8 +188,7 @@ class WorldHandler extends NukkitRunnable {
                 break;
             }
         }
-        BinaryStream stream = new BinaryStream(new byte[771]).reset();
-        stream.putByte((byte) count);
+        BinaryStream stream = new BinaryStream(new byte[257]).reset();
         for (int i = 0; i < count; i++) {
             stream.putByte((byte) 0);
             ChunkSection section = sections[i];
@@ -263,9 +262,8 @@ class WorldHandler extends NukkitRunnable {
                 stream.put(section.getBytes());
             }
         }
-        byte[] merged = new byte[769];
-        System.arraycopy(chunk.getHeightMapArray(), 0, merged, 0, 256);
-        System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 512, 256);
+        byte[] merged = new byte[257];
+        System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 0, 256);
         stream.put(merged);
         if (extraData != null) {
             stream.put(extraData.getBuffer());
@@ -273,7 +271,7 @@ class WorldHandler extends NukkitRunnable {
             stream.putVarInt(0);
         }
         stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, stream.getBuffer());
+        this.chunkRequestCallback(timestamp, chunkX, chunkZ, count, stream.getBuffer());
     }
 
     private void requestLevelDBChunkTask(int chunkX, int chunkZ) {
@@ -369,7 +367,7 @@ class WorldHandler extends NukkitRunnable {
             stream.putLInt(0);
         }
         stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, stream.getBuffer());
+        this.chunkRequestCallback(timestamp, chunkX, chunkZ, 16, stream.getBuffer());
     }
 
     private void requestMcRegionChunkTask(int chunkX, int chunkZ) throws ChunkException {
@@ -465,7 +463,7 @@ class WorldHandler extends NukkitRunnable {
             stream.putLInt(0);
         }
         stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, stream.getBuffer());
+        this.chunkRequestCallback(timestamp, chunkX, chunkZ, 16, stream.getBuffer());
     }
 
     private static class Entry {
