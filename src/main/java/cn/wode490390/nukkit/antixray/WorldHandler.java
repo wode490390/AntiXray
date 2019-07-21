@@ -217,15 +217,15 @@ class WorldHandler extends NukkitRunnable {
                                 int xy = tx + cy;
                                 int zy = tz + cy;
                                 int index = xz + cy;
-                                if (!this.antixray.filters.contains((int) ((byte) (blocks[((cx + 1) << 8) + zy] & 0xff)))
-                                        && !this.antixray.filters.contains((int) ((byte) (blocks[((cx - 1) << 8) + zy] & 0xff)))
-                                        && !this.antixray.filters.contains((int) ((byte) (blocks[xy + ((cz + 1) << 4)] & 0xff)))
-                                        && !this.antixray.filters.contains((int) ((byte) (blocks[xy + ((cz - 1) << 4)] & 0xff)))
-                                        && !this.antixray.filters.contains((int) ((byte) (blocks[index + 1] & 0xff)))
-                                        && !this.antixray.filters.contains((int) ((byte) (blocks[index - 1] & 0xff)))) {
+                                if (!this.antixray.filters.contains(blocks[((cx + 1) << 8) + zy] & 0xff)
+                                        && !this.antixray.filters.contains(blocks[((cx - 1) << 8) + zy] & 0xff)
+                                        && !this.antixray.filters.contains(blocks[xy + ((cz + 1) << 4)] & 0xff)
+                                        && !this.antixray.filters.contains(blocks[xy + ((cz - 1) << 4)] & 0xff)
+                                        && !this.antixray.filters.contains(blocks[index + 1] & 0xff)
+                                        && !this.antixray.filters.contains(blocks[index - 1] & 0xff)) {
                                     if (this.antixray.mode) {
                                         ids[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
-                                    } else if (this.antixray.ores.contains((int) ((byte) (blocks[index] & 0xff)))) {
+                                    } else if (this.antixray.ores.contains(blocks[index] & 0xff)) {
                                         switch (this.level.getDimension()) {
                                             case Level.DIMENSION_OVERWORLD:
                                                 ids[index] = (byte) (this.antixray.fake_o & 0xff);
