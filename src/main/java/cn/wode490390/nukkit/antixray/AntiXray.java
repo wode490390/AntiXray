@@ -156,9 +156,7 @@ public class AntiXray extends PluginBase implements Listener {
                     this.localCache = false;
                     this.getLogger().warning("Failed to initialize cache! Disabled cache.");
                 } else {
-                    this.checkCache();
                     XX64 = LongHashFunction.xx();
-                    this.getLogger().info("Successfully initialized cache!");
                 }
             }
             this.getServer().getPluginManager().registerEvents(this, this);
@@ -242,10 +240,6 @@ public class AntiXray extends PluginBase implements Listener {
         return XX64.hashBytes(buffer);
     }
 
-    boolean hasCache(byte[] buffer) {
-        return this.hasCache(XX64.hashBytes(buffer));
-    }
-
     boolean hasCache(long hash) {
         File file = new File(CACHE_DIR, String.valueOf(hash));
         return file.exists() && !file.isDirectory();
@@ -275,16 +269,6 @@ public class AntiXray extends PluginBase implements Listener {
             this.getLogger().debug("Unable to read cache file", e);
         }
         return null;
-    }
-
-    private void checkCache() {
-        for (File file : CACHE_DIR.listFiles()) {
-            if (file.isDirectory()) {
-                deleteFolder(file);
-            } else if (file.length() == 0) {
-                file.delete();
-            }
-        }
     }
 
     private void logLoadException(String node) {
