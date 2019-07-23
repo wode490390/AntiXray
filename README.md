@@ -1,13 +1,19 @@
 # AntiXray
 [![](http://i.loli.net/2019/01/27/5c4d21504445e.png)](http://www.mcbbs.net/thread-838490-1-1.html "假矿")
 
-Anti X-Ray cheat plugin for Nukkit
+Anti X-Ray plugin for Nukkit.
+
+This plugin is used to counter X-RAY Client add-ons.
+
+It modifies data that are sent to clients to hide blocks.
+
+It does not manipulate blocks in the level file, thus is safe to use.
 
 Please see [mcbbs](http://www.mcbbs.net/thread-838490-1-1.html) for more information.
 ## Permissions
-| Permission | Description |
+| Permission | Description | Default |
 | - | - |
-| antixray.whitelist | Allow player to cheat with X-Ray |
+| antixray.whitelist | Allow player to cheat with X-Ray | `OP` |
 ## config.yml
 ```yaml
 # The smaller the value, the higher the performance (1~255)
