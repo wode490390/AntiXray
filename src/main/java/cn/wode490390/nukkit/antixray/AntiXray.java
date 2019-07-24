@@ -109,6 +109,9 @@ public class AntiXray extends PluginBase implements Listener {
         }
         if (!this.worlds.isEmpty() && !this.ores.isEmpty()) {
             this.getServer().getPluginManager().registerEvents(this, this);
+            if (this.cache) {
+                this.getServer().getPluginManager().registerEvents(new CleanerListener(), this);
+            }
         }
     }
 
@@ -123,18 +126,6 @@ public class AntiXray extends PluginBase implements Listener {
             this.handlers.get(level).requestChunk(event.getChunkX(), event.getChunkZ(), player);
         }
         AntiXrayTimings.BlockUpdateEventTimer.stopTiming();
-    }
-
-    @EventHandler
-    public void onChunkUnload(ChunkUnloadEvent event) {
-        Level level = event.getLevel();
-        if (this.worlds.contains(level.getName())) {
-            AntiXrayTimings.ChunkUnloadEventTimer.startTiming();
-            FullChunk chunk = event.getChunk();
-            this.handlers.putIfAbsent(level, new WorldHandler(this, level));
-            this.handlers.get(level).clearCache(chunk.getX(), chunk.getZ());
-            AntiXrayTimings.ChunkUnloadEventTimer.stopTiming();
-        }
     }
 
     @EventHandler
@@ -187,5 +178,24 @@ public class AntiXray extends PluginBase implements Listener {
 
     private void logLoadException(String node) {
         this.getLogger().alert("An error occurred while reading the configuration '" + node + "'. Use the default value.");
+    }
+
+    public class CleanerListener implements Listener {
+
+        private CleanerListener() {
+
+        }
+
+        @EventHandler
+        public void onChunkUnload(ChunkUnloadEvent event) {
+            Level level = event.getLevel();
+            if (worlds.contains(level.getName())) {
+                AntiXrayTimings.ChunkUnloadEventTimer.startTiming();
+                FullChunk chunk = event.getChunk();
+                handlers.putIfAbsent(level, new WorldHandler(AntiXray.this, level));
+                handlers.get(level).clearCache(chunk.getX(), chunk.getZ());
+                AntiXrayTimings.ChunkUnloadEventTimer.stopTiming();
+            }
+        }
     }
 }

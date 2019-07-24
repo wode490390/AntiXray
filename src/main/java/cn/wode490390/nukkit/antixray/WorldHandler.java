@@ -34,7 +34,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 
 class WorldHandler extends NukkitRunnable {
 
@@ -91,10 +90,10 @@ class WorldHandler extends NukkitRunnable {
             int chunkX = Level.getHashX(index);
             int chunkZ = Level.getHashZ(index);
             this.chunkSendTasks.add(index);
-            BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ);
-            if (chunk != null) {
+            if (this.antixray.cache) {
+                BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ);
                 Entry entry = this.caches.get(index);
-                if (entry != null && chunk.getChanges() <= entry.timestamp) {
+                if (chunk != null && entry != null && chunk.getChanges() <= entry.timestamp) {
                     this.sendChunk(chunkX, chunkZ, index, entry.cache);
                     continue;
                 }
@@ -217,7 +216,7 @@ class WorldHandler extends NukkitRunnable {
                                 if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
                                     int index = (cx << 8) + (cz << 4) + cy;
                                     if (this.antixray.mode) {
-                                        ids[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
+                                        ids[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
                                     } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
                                         switch (this.level.getDimension()) {
                                             case Level.DIMENSION_OVERWORLD:
@@ -303,7 +302,7 @@ class WorldHandler extends NukkitRunnable {
                     if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
                         int index = (cx << 11) | (cz << 7) | y;
                         if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
+                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
                         } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
                             switch (this.level.getDimension()) {
                                 case Level.DIMENSION_OVERWORLD:
@@ -389,7 +388,7 @@ class WorldHandler extends NukkitRunnable {
                     if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
                         int index = (cx << 11) | (cz << 7) | y;
                         if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(ThreadLocalRandom.current().nextInt(this.maxSize)) & 0xff);
+                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
                         } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
                             switch (this.level.getDimension()) {
                                 case Level.DIMENSION_OVERWORLD:
