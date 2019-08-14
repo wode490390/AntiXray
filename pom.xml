@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>cn.wode490390.nukkit</groupId>
     <artifactId>antixray</artifactId>
-    <version>1.0.9</version>
+    <version>1.1.0</version>
     <name>AntiXray</name>
     <description>Anti X-Ray cheat plugin for Nukkit</description>
     <inceptionYear>2018</inceptionYear>
@@ -34,6 +34,12 @@
             <version>1.0-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>net.openhft</groupId>
+            <artifactId>zero-allocation-hashing</artifactId>
+            <version>0.9</version>
+            <scope>compile</scope>
+        </dependency>
     </dependencies>
     <build>
         <defaultGoal>clean package</defaultGoal>
@@ -48,5 +54,29 @@
                 </includes>
             </resource>
         </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.2.1</version>
+                <configuration>
+                    <artifactSet>
+                        <includes>
+                            <include>*:*</include>
+                        </includes>
+                    </artifactSet>
+                    <createDependencyReducedPom>false</createDependencyReducedPom>
+                    <minimizeJar>true</minimizeJar>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 </project>

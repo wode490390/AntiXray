@@ -1,6 +1,7 @@
 package cn.wode490390.nukkit.antixray;
 
 import cn.nukkit.Player;
+import cn.nukkit.Server;
 import cn.nukkit.blockentity.BlockEntitySpawnable;
 import cn.nukkit.level.Level;
 import cn.nukkit.level.format.ChunkSection;
@@ -8,7 +9,6 @@ import cn.nukkit.level.format.LevelProvider;
 import cn.nukkit.level.format.anvil.Anvil;
 import cn.nukkit.level.format.anvil.Chunk;
 import cn.nukkit.level.format.anvil.util.BlockStorage;
-import cn.nukkit.level.format.anvil.util.NibbleArray;
 import cn.nukkit.level.format.generic.BaseFullChunk;
 import cn.nukkit.level.format.leveldb.LevelDB;
 import cn.nukkit.level.format.mcregion.McRegion;
@@ -47,7 +47,7 @@ class WorldHandler extends NukkitRunnable {
     private final Level level;
 
     private final AntiXray antixray;
-    private final AntiXrayTimings timings;
+    //private final AntiXrayTimings timings;
 
     private final int maxSectionY;
     private final int maxSize;
@@ -55,8 +55,8 @@ class WorldHandler extends NukkitRunnable {
     WorldHandler(AntiXray antixray, Level level) {
         this.level = level;
         this.antixray = antixray;
-        this.timings = new AntiXrayTimings(this.level);
-        if (this.antixray.cache) {
+        //this.timings = new AntiXrayTimings(this.level);
+        if (this.antixray.memoryCache) {
             this.caches = new ConcurrentHashMap<>();
         }
         this.maxSectionY = this.antixray.height >> 4;
@@ -80,7 +80,7 @@ class WorldHandler extends NukkitRunnable {
     }
 
     private void processChunkRequest() {
-        this.timings.ChunkSendTimer.startTiming();
+        //this.timings.ChunkSendTimer.startTiming();
         Iterator<Long> iterator = this.chunkSendQueue.keySet().iterator();
         while (iterator.hasNext()) {
             long index = iterator.next();
@@ -90,34 +90,32 @@ class WorldHandler extends NukkitRunnable {
             int chunkX = Level.getHashX(index);
             int chunkZ = Level.getHashZ(index);
             this.chunkSendTasks.add(index);
-            if (this.antixray.cache) {
-                BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ);
+            BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ);
+            if (chunk != null) {
                 Entry entry = this.caches.get(index);
-                if (chunk != null && entry != null && chunk.getChanges() <= entry.timestamp) {
+                if (entry != null && chunk.getChanges() <= entry.timestamp) {
                     this.sendChunk(chunkX, chunkZ, index, entry.cache);
                     continue;
                 }
             }
-            this.timings.ChunkSendPrepareTimer.startTiming();
+            //this.timings.ChunkSendPrepareTimer.startTiming();
+            AsyncTask task = null;
             LevelProvider provider = this.level.getProvider();
             if (provider instanceof Anvil) {
-                this.requestAnvilChunkTask(chunkX, chunkZ);
-                this.timings.ChunkSendPrepareTimer.stopTiming();
+                task = new AnvilChunkRequestTask(chunkX, chunkZ);
             } else if (provider instanceof LevelDB) {
-                this.requestLevelDBChunkTask(chunkX, chunkZ);
-                this.timings.ChunkSendPrepareTimer.stopTiming();
+                task = new LevelDBChunkRequestTask(chunkX, chunkZ);
             } else if (provider instanceof McRegion) {
-                this.requestMcRegionChunkTask(chunkX, chunkZ);
-                this.timings.ChunkSendPrepareTimer.stopTiming();
-            } else {
-                this.timings.ChunkSendPrepareTimer.stopTiming();
-                AsyncTask task = provider.requestChunkTask(chunkX, chunkZ);
-                if (task != null) {
-                    this.antixray.getServer().getScheduler().scheduleAsyncTask(this.antixray, task);
-                }
+                task = new McRegionChunkRequestTask(chunkX, chunkZ);
+            } else if (provider != null) {
+                task = provider.requestChunkTask(chunkX, chunkZ);
             }
+            if (task != null) {
+                this.antixray.getServer().getScheduler().scheduleAsyncTask(this.antixray, task);
+            }
+            //this.timings.ChunkSendPrepareTimer.stopTiming();
         }
-        this.timings.ChunkSendTimer.stopTiming();
+        //this.timings.ChunkSendTimer.stopTiming();
     }
 
     private void sendChunk(int chunkX, int chunkZ, long index, DataPacket packet) {
@@ -131,16 +129,16 @@ class WorldHandler extends NukkitRunnable {
     }
 
     private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload) {
-        this.timings.ChunkSendTimer.startTiming();
+        //this.timings.ChunkSendTimer.startTiming();
         long index = Level.chunkHash(chunkX, chunkZ);
-        if (this.antixray.cache) {
+        if (this.antixray.memoryCache) {
             BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, subChunkCount, payload);
             BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ, false);
             if (chunk != null && chunk.getChanges() <= timestamp) {
                 this.caches.put(index, new Entry(timestamp, packet));
             }
             this.sendChunk(chunkX, chunkZ, index, packet);
-            this.timings.ChunkSendTimer.stopTiming();
+            //this.timings.ChunkSendTimer.stopTiming();
             return;
         }
         if (this.chunkSendTasks.contains(index)) {
@@ -150,288 +148,459 @@ class WorldHandler extends NukkitRunnable {
             this.chunkSendQueue.remove(index);
             this.chunkSendTasks.remove(index);
         }
-        this.timings.ChunkSendTimer.stopTiming();
+        //this.timings.ChunkSendTimer.stopTiming();
     }
 
-    private void requestAnvilChunkTask(int chunkX, int chunkZ) throws ChunkException {
-        Chunk chunk = (Chunk) this.level.getProvider().getChunk(chunkX, chunkZ, false);
-        if (chunk == null) {
-            return;
+    private void chunkRequestFailed(int chunkX, int chunkZ, Throwable t) {
+        long index = Level.chunkHash(chunkX, chunkZ);
+        this.chunkSendQueue.remove(index);
+        this.chunkSendTasks.remove(index);
+        this.antixray.getLogger().debug("Chunk request failed at: " + chunkX + "," + chunkZ, t);
+    }
+
+    private class AnvilChunkRequestTask extends AsyncTask {
+
+        private final int chunkX;
+        private final int chunkZ;
+
+        private long timestamp;
+        private int count;
+        private Throwable t;
+
+        private AnvilChunkRequestTask(int chunkX, int chunkZ) throws ChunkException {
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
         }
-        long timestamp = chunk.getChanges();
-        byte[] tiles = new byte[0];
-        if (!chunk.getBlockEntities().isEmpty()) {
-            List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
-            chunk.getBlockEntities().values().parallelStream()
-                    .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
-                    .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
-            try {
-                tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
-            } catch (IOException e) {
+
+        @Override
+        public void onRun() {
+            Chunk chunk = (Chunk) level.getProvider().getChunk(this.chunkX, this.chunkZ, false);
+            if (chunk == null) {
+                this.t = new NullPointerException("Chunk cannot be null");
                 return;
             }
-        }
-        Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
-        BinaryStream extraData = null;
-        if (!extra.isEmpty()) {
-            extraData = new BinaryStream();
-            extraData.putVarInt(extra.size());
-            for (Map.Entry<Integer, Integer> entry : extra.entrySet()) {
-                extraData.putVarInt(entry.getKey());
-                extraData.putLShort(entry.getValue());
-            }
-        }
-        int count = 0;
-        ChunkSection[] sections = chunk.getSections();
-        for (int i = sections.length - 1; i >= 0; i--) {
-            if (!sections[i].isEmpty()) {
-                count = i + 1;
-                break;
-            }
-        }
-        BinaryStream stream = new BinaryStream();
-        for (int i = 0; i < count; i++) {
-            stream.putByte((byte) 0);
-            ChunkSection section = sections[i];
-            if (section.isEmpty()) {
-                stream.put(EMPTY_SECTION);
-            } else if (section.getY() <= maxSectionY) {
+            this.timestamp = chunk.getChanges();
+            byte[] tiles = new byte[0];
+            if (!chunk.getBlockEntities().isEmpty()) {
+                List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
+                chunk.getBlockEntities().values().parallelStream()
+                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
+                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
                 try {
-                    Field field = Field.class.getDeclaredField("modifiers");
-                    field.setAccessible(true);
-                    Field f = cn.nukkit.level.format.anvil.ChunkSection.class.getDeclaredField("storage");
-                    field.setInt(f, f.getModifiers() & ~Modifier.FINAL);
-                    f.setAccessible(true);
-                    BlockStorage storage = (BlockStorage) f.get(section);
-                    byte[] ids = storage.getBlockIds();
-                    byte[] data = new byte[storage.getBlockData().length];
-                    System.arraycopy(storage.getBlockData(), 0, data, 0, data.length);
-                    NibbleArray blockData = new NibbleArray(data);
-                    for (int cx = 0; cx < 16; cx++) {
-                        for (int cz = 0; cz < 16; cz++) {
-                            for (int cy = 0; cy < 16; cy++) {
-                                int x = (chunkX << 4) + cx;
-                                int y = (section.getY() << 4) + cy;
-                                int z = (chunkZ << 4) + cz;
-                                if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
-                                    int index = (cx << 8) + (cz << 4) + cy;
-                                    if (this.antixray.mode) {
-                                        ids[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
-                                    } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
-                                        switch (this.level.getDimension()) {
-                                            case Level.DIMENSION_OVERWORLD:
-                                                ids[index] = (byte) (this.antixray.fake_o & 0xff);
-                                                break;
-                                            case Level.DIMENSION_NETHER:
-                                                ids[index] = (byte) (this.antixray.fake_n & 0xff);
-                                                break;
-                                            case Level.DIMENSION_THE_END:
-                                            default:
-                                                ids[index] = 1;
-                                                break;
-                                        }
-                                    } else {
+                    tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
+                } catch (IOException e) {
+                    this.t = e;
+                    return;
+                }
+            }
+            Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
+            BinaryStream extraData = null;
+            if (!extra.isEmpty()) {
+                extraData = new BinaryStream();
+                extraData.putVarInt(extra.size());
+                for (Map.Entry<Integer, Integer> entry : extra.entrySet()) {
+                    extraData.putVarInt(entry.getKey());
+                    extraData.putLShort(entry.getValue());
+                }
+            }
+            this.count = 0;
+            ChunkSection[] sections = chunk.getSections();
+            for (int i = sections.length - 1; i >= 0; i--) {
+                if (!sections[i].isEmpty()) {
+                    this.count = i + 1;
+                    break;
+                }
+            }
+            BinaryStream stream = new BinaryStream(new byte[257]).reset(); //256 + 1
+            for (int i = 0; i < this.count; i++) {
+                stream.putByte((byte) 0);
+                ChunkSection section = sections[i];
+                if (section.isEmpty()) {
+                    stream.put(EMPTY_SECTION);
+                } else if (section.getY() <= maxSectionY) {
+                    try {
+                        Field field = Field.class.getDeclaredField("modifiers");
+                        field.setAccessible(true);
+                        Field f = cn.nukkit.level.format.anvil.ChunkSection.class.getDeclaredField("storage");
+                        field.setInt(f, f.getModifiers() & ~Modifier.FINAL);
+                        f.setAccessible(true);
+                        BlockStorage storage = (BlockStorage) f.get(section);
+                        byte[] blocks = storage.getBlockIds();
+                        long hash = 0;
+                        if (antixray.localCache) {
+                            hash = antixray.getCacheHash(blocks);
+                            if (antixray.hasCache(hash)) {
+                                stream.put(antixray.readCache(hash));
+                                continue;
+                            }
+                        }
+                        byte[] ids = new byte[4096];
+                        System.arraycopy(blocks, 0, ids, 0, 4096);
+                        byte[] data = new byte[2048];
+                        System.arraycopy(storage.getBlockData(), 0, data, 0, 2048);
+                        int y = section.getY() << 4;
+                        for (int cx = 1; cx < 15; cx++) {
+                            int tx = cx << 8;
+                            for (int cz = 1; cz < 15; cz++) {
+                                int tz = cz << 4;
+                                int xz = tx + tz;
+                                for (int cy = 1; cy < 15; cy++) {
+                                    if ((y + cy) > antixray.height) {
                                         continue;
                                     }
-                                    if (this.level.getBlockDataAt(x, y, z) != 0) {
-                                        blockData.set(index, (byte) 0);
+                                    int xy = tx + cy;
+                                    int zy = tz + cy;
+                                    int index = xz + cy;
+                                    if (!antixray.filters.contains(blocks[((cx + 1) << 8) + zy] & 0xff)
+                                            && !antixray.filters.contains(blocks[((cx - 1) << 8) + zy] & 0xff)
+                                            && !antixray.filters.contains(blocks[xy + ((cz + 1) << 4)] & 0xff)
+                                            && !antixray.filters.contains(blocks[xy + ((cz - 1) << 4)] & 0xff)
+                                            && !antixray.filters.contains(blocks[index + 1] & 0xff)
+                                            && !antixray.filters.contains(blocks[index - 1] & 0xff)) {
+                                        if (antixray.mode) {
+                                            ids[index] = (byte) (antixray.ores.get(index % maxSize) & 0xff);
+                                        } else if (antixray.ores.contains(blocks[index] & 0xff)) {
+                                            switch (level.getDimension()) {
+                                                case Level.DIMENSION_OVERWORLD:
+                                                    ids[index] = (byte) (antixray.fake_o & 0xff);
+                                                    break;
+                                                case Level.DIMENSION_NETHER:
+                                                    ids[index] = (byte) (antixray.fake_n & 0xff);
+                                                    break;
+                                                case Level.DIMENSION_THE_END:
+                                                default:
+                                                    ids[index] = 0;
+                                                    break;
+                                            }
+                                        } else {
+                                            continue;
+                                        }
+                                        int halfIndex = index / 2;
+                                        byte nibbleData = data[halfIndex];
+                                        boolean flag = (index & 1) == 0;
+                                        if ((flag ? nibbleData & 0xf : (nibbleData & 0xf0) >>> 4) != 0) {
+                                            data[halfIndex] = flag ? (byte) (nibbleData & 0xf0) : (byte) (nibbleData & 0xf);
+                                        }
                                     }
                                 }
                             }
                         }
+                        byte[] merged = new byte[6144];
+                        System.arraycopy(ids, 0, merged, 0, 4096);
+                        System.arraycopy(data, 0, merged, 4096, 2048);
+                        stream.put(merged);
+                        if (antixray.localCache) {
+                            antixray.createCache(hash, merged);
+                        }
+                    } catch (Exception e) {
+                        stream.put(section.getBytes());
                     }
-                    byte[] merged = new byte[ids.length + data.length];
-                    System.arraycopy(ids, 0, merged, 0, ids.length);
-                    System.arraycopy(data, 0, merged, ids.length, data.length);
-                    stream.put(merged);
-                } catch (Exception e) {
+                } else {
                     stream.put(section.getBytes());
                 }
+            }
+            byte[] merged = new byte[257]; //256 + 1
+            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 0, 256);
+            stream.put(merged);
+            if (extraData != null) {
+                stream.put(extraData.getBuffer());
             } else {
-                stream.put(section.getBytes());
+                stream.putVarInt(0); //1
+            }
+            if (tiles.length != 0) {
+                stream.put(tiles);
+            }
+            this.setResult(stream.getBuffer());
+        }
+
+        @Override
+        public void onCompletion(Server server) {
+            if (this.hasResult()) {
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, this.count, (byte[]) this.getResult());
+            } else {
+                chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
         }
-        stream.put(chunk.getBiomeIdArray());
-        stream.putByte((byte) 0);
-        if (extraData != null) {
-            stream.put(extraData.getBuffer());
-        } else {
-            stream.putVarInt(0);
-        }
-        stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, count, stream.getBuffer());
     }
 
-    private void requestLevelDBChunkTask(int chunkX, int chunkZ) {
-        cn.nukkit.level.format.leveldb.Chunk chunk = ((LevelDB) this.level.getProvider()).getChunk(chunkX, chunkZ, false);
-        if (chunk == null) {
-            return;
+    private class LevelDBChunkRequestTask extends AsyncTask {
+
+        private final int chunkX;
+        private final int chunkZ;
+
+        private long timestamp;
+        private Throwable t;
+
+        private LevelDBChunkRequestTask(int chunkX, int chunkZ) {
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
         }
-        long timestamp = chunk.getChanges();
-        byte[] tiles = new byte[0];
-        if (!chunk.getBlockEntities().isEmpty()) {
-            List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
-            chunk.getBlockEntities().values().parallelStream()
-                    .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
-                    .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
-            try {
-                tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN);
-            } catch (IOException e) {
+
+        @Override
+        public void onRun() {
+            cn.nukkit.level.format.leveldb.Chunk chunk = ((LevelDB) level.getProvider()).getChunk(this.chunkX, this.chunkZ, false);
+            if (chunk == null) {
+                this.t = new NullPointerException("Chunk cannot be null");
                 return;
             }
-        }
-        Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
-        BinaryStream extraData = null;
-        if (!extra.isEmpty()) {
-            extraData = new BinaryStream();
-            extraData.putLInt(extra.size());
-            for (Integer key : extra.values()) {
-                extraData.putLInt(key);
-                extraData.putLShort(extra.get(key));
+            this.timestamp = chunk.getChanges();
+            byte[] tiles = new byte[0];
+            if (!chunk.getBlockEntities().isEmpty()) {
+                List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
+                chunk.getBlockEntities().values().parallelStream()
+                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
+                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
+                try {
+                    tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN);
+                } catch (IOException e) {
+                    this.t = e;
+                    return;
+                }
             }
-        }
-        byte[] blocks = new byte[chunk.getBlockIdArray().length];
-        System.arraycopy(chunk.getBlockIdArray(), 0, blocks, 0, blocks.length);
-        byte[] data = new byte[chunk.getBlockDataArray().length];
-        System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, data.length);
-        for (int cx = 0; cx < 16; cx++) {
-            for (int cz = 0; cz < 16; cz++) {
-                for (int y = 0; y <= this.antixray.height; y++) {
-                    int x = (chunkX << 4) + cx;
-                    int z = (chunkZ << 4) + cz;
-                    if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
-                        int index = (cx << 11) | (cz << 7) | y;
-                        if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
-                        } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
-                            switch (this.level.getDimension()) {
-                                case Level.DIMENSION_OVERWORLD:
-                                    blocks[index] = (byte) (this.antixray.fake_o & 0xff);
-                                    break;
-                                case Level.DIMENSION_NETHER:
-                                    blocks[index] = (byte) (this.antixray.fake_n & 0xff);
-                                    break;
-                                case Level.DIMENSION_THE_END:
-                                default:
-                                    blocks[index] = 1;
-                                    break;
-                            }
-                        } else {
-                            continue;
-                        }
-                        if (this.level.getBlockDataAt(x, y, z) != 0) {
-                            int dataIndex = (cx << 10) | (cz << 6) | (y >> 1);
-                            int old = data[dataIndex] & 0xff;
-                            if ((y & 1) == 0) {
-                                data[dataIndex] = (byte) (old & 0xf0);
-                            } else {
-                                data[dataIndex] = (byte) (old & 0x0f);
+            Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
+            BinaryStream extraData = null;
+            if (!extra.isEmpty()) {
+                extraData = new BinaryStream();
+                extraData.putLInt(extra.size());
+                for (Integer key : extra.values()) {
+                    extraData.putLInt(key);
+                    extraData.putLShort(extra.get(key));
+                }
+            }
+            byte[] merged = new byte[82432]; //32768 + 16384 + 16384 + 16384 + 256 + 256
+            byte[] blocks = chunk.getBlockIdArray();
+            boolean hit = false;
+            long hash = 0;
+            if (antixray.localCache) {
+                hash = antixray.getCacheHash(blocks);
+                if (antixray.hasCache(hash)) {
+                    System.arraycopy(antixray.readCache(hash), 0, merged, 0, 49152);
+                    hit = true;
+                }
+            }
+            if (!hit) {
+                byte[] ids = new byte[32768];
+                System.arraycopy(blocks, 0, ids, 0, 32768);
+                byte[] data = new byte[16384];
+                System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, 16384);
+                for (int cx = 1; cx < 15; cx++) {
+                    int tx = cx << 11;
+                    int dtx = cx << 10;
+                    for (int cz = 1; cz < 15; cz++) {
+                        int tz = cz << 7;
+                        int dtz = cz << 6;
+                        int xz = tx | tz;
+                        int dxz = dtx | dtz;
+                        for (int y = 1; y <= antixray.height && y < 255; y++) {
+                            int xy = tx | y;
+                            int zy = tz | y;
+                            if (!antixray.filters.contains(blocks[((cx + 1) << 11) | zy] & 0xff)
+                                    && !antixray.filters.contains(blocks[((cx - 1) << 11) | zy] & 0xff)
+                                    && !antixray.filters.contains(blocks[xy | ((cz + 1) << 7)] & 0xff)
+                                    && !antixray.filters.contains(blocks[xy | ((cz - 1) << 7)] & 0xff)
+                                    && !antixray.filters.contains(blocks[xz | (y + 1)] & 0xff)
+                                    && !antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
+                                int index = xz | y;
+                                if (antixray.mode) {
+                                    blocks[index] = (byte) (antixray.ores.get(index % maxSize) & 0xff);
+                                } else if (antixray.ores.contains(blocks[index] & 0xff)) {
+                                    switch (level.getDimension()) {
+                                        case Level.DIMENSION_OVERWORLD:
+                                            blocks[index] = (byte) (antixray.fake_o & 0xff);
+                                            break;
+                                        case Level.DIMENSION_NETHER:
+                                            blocks[index] = (byte) (antixray.fake_n & 0xff);
+                                            break;
+                                        case Level.DIMENSION_THE_END:
+                                        default:
+                                            blocks[index] = 0;
+                                            break;
+                                    }
+                                } else {
+                                    continue;
+                                }
+                                int dataIndex = dxz | (y >> 1);
+                                int blockData = data[dataIndex] & 0xff;
+                                boolean flag = (y & 1) == 0;
+                                if ((flag ? data[dataIndex] & 0xf : data[dataIndex] >> 4) != 0) {
+                                    data[dataIndex] = flag ? (byte) (blockData & 0xf0) : (byte) (blockData & 0xf);
+                                }
                             }
                         }
                     }
                 }
+                System.arraycopy(blocks, 0, merged, 0, 32768);
+                System.arraycopy(data, 0, merged, 32768, 16384);
+                if (antixray.localCache) {
+                    byte[] cache = new byte[49152];
+                    System.arraycopy(merged, 0, cache, 0, 49152);
+                    antixray.createCache(hash, cache);
+                }
+            }
+            System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49152, 16384);
+            System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65536, 16384);
+            System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81920, 256);
+            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82176, 256);
+            BinaryStream stream = new BinaryStream(merged);
+            if (extraData != null) {
+                stream.put(extraData.getBuffer());
+            } else {
+                stream.putLInt(0); //4
+            }
+            if (tiles.length != 0) {
+                stream.put(tiles);
+            }
+            this.setResult(stream.getBuffer());
+        }
+
+        @Override
+        public void onCompletion(Server server) {
+            if (this.hasResult()) {
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult());
+            } else {
+                chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
         }
-        BinaryStream stream = new BinaryStream();
-        stream.put(blocks);
-        stream.put(data);
-        stream.put(chunk.getBlockSkyLightArray());
-        stream.put(chunk.getBlockLightArray());
-        stream.put(chunk.getHeightMapArray());
-        stream.put(chunk.getBiomeIdArray());
-        if (extraData != null) {
-            stream.put(extraData.getBuffer());
-        } else {
-            stream.putLInt(0);
-        }
-        stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, 16, stream.getBuffer());
     }
 
-    private void requestMcRegionChunkTask(int chunkX, int chunkZ) throws ChunkException {
-        BaseFullChunk chunk = this.level.getProvider().getChunk(chunkX, chunkZ, false);
-        if (chunk == null) {
-            return;
+    private class McRegionChunkRequestTask extends AsyncTask {
+
+        private final int chunkX;
+        private final int chunkZ;
+
+        private long timestamp;
+        private Throwable t;
+
+        private McRegionChunkRequestTask(int chunkX, int chunkZ) throws ChunkException {
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
         }
-        long timestamp = chunk.getChanges();
-        byte[] tiles = new byte[0];
-        if (!chunk.getBlockEntities().isEmpty()) {
-            List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
-            chunk.getBlockEntities().values().parallelStream()
-                    .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
-                    .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
-            try {
-                tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
-            } catch (IOException e) {
+
+        @Override
+        public void onRun() {
+            BaseFullChunk chunk = level.getProvider().getChunk(this.chunkX, this.chunkZ, false);
+            if (chunk == null) {
+                this.t = new NullPointerException("Chunk cannot be null");
                 return;
             }
-        }
-        Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
-        BinaryStream extraData = null;
-        if (!extra.isEmpty()) {
-            extraData = new BinaryStream();
-            extraData.putLInt(extra.size());
-            for (Map.Entry<Integer, Integer> entry : extra.entrySet()) {
-                extraData.putLInt(entry.getKey());
-                extraData.putLShort(entry.getValue());
+            this.timestamp = chunk.getChanges();
+            byte[] tiles = new byte[0];
+            if (!chunk.getBlockEntities().isEmpty()) {
+                List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
+                chunk.getBlockEntities().values().parallelStream()
+                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
+                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
+                try {
+                    tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
+                } catch (IOException e) {
+                    this.t = e;
+                    return;
+                }
             }
-        }
-        byte[] blocks = new byte[chunk.getBlockIdArray().length];
-        System.arraycopy(chunk.getBlockIdArray(), 0, blocks, 0, blocks.length);
-        byte[] data = new byte[chunk.getBlockDataArray().length];
-        System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, data.length);
-        for (int cx = 0; cx < 16; cx++) {
-            for (int cz = 0; cz < 16; cz++) {
-                for (int y = 0; y <= this.antixray.height; y++) {
-                    int x = (chunkX << 4) + cx;
-                    int z = (chunkZ << 4) + cz;
-                    if (!this.antixray.filters.contains(this.level.getBlockIdAt(x + 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y + 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z + 1)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x - 1, y, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y - 1, z)) && !this.antixray.filters.contains(this.level.getBlockIdAt(x, y, z - 1))) {
-                        int index = (cx << 11) | (cz << 7) | y;
-                        if (this.antixray.mode) {
-                            blocks[index] = (byte) (this.antixray.ores.get(index % this.maxSize) & 0xff);
-                        } else if (this.antixray.ores.contains(this.level.getBlockIdAt(x, y, z))) {
-                            switch (this.level.getDimension()) {
-                                case Level.DIMENSION_OVERWORLD:
-                                    blocks[index] = (byte) (this.antixray.fake_o & 0xff);
-                                    break;
-                                case Level.DIMENSION_NETHER:
-                                    blocks[index] = (byte) (this.antixray.fake_n & 0xff);
-                                    break;
-                                case Level.DIMENSION_THE_END:
-                                default:
-                                    blocks[index] = 1;
-                                    break;
-                            }
-                        } else {
-                            continue;
-                        }
-                        if (this.level.getBlockDataAt(x, y, z) != 0) {
-                            int dataIndex = (cx << 10) | (cz << 6) | (y >> 1);
-                            int old = data[dataIndex] & 0xff;
-                            if ((y & 1) == 0) {
-                                data[dataIndex] = (byte) (old & 0xf0);
-                            } else {
-                                data[dataIndex] = (byte) (old & 0x0f);
+            Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
+            BinaryStream extraData = null;
+            if (!extra.isEmpty()) {
+                extraData = new BinaryStream();
+                extraData.putLInt(extra.size());
+                for (Map.Entry<Integer, Integer> entry : extra.entrySet()) {
+                    extraData.putLInt(entry.getKey());
+                    extraData.putLShort(entry.getValue());
+                }
+            }
+            byte[] merged = new byte[82432];
+            byte[] blocks = chunk.getBlockIdArray();
+            boolean hit = false;
+            long hash = 0;
+            if (antixray.localCache) {
+                hash = antixray.getCacheHash(blocks);
+                if (antixray.hasCache(hash)) {
+                    System.arraycopy(antixray.readCache(hash), 0, merged, 0, 49152);
+                    hit = true;
+                }
+            }
+            if (!hit) {
+                byte[] ids = new byte[32768];
+                System.arraycopy(blocks, 0, ids, 0, 32768);
+                byte[] data = new byte[16384];
+                System.arraycopy(chunk.getBlockDataArray(), 0, data, 0, 16384);
+                for (int cx = 1; cx < 15; cx++) {
+                    int tx = cx << 11;
+                    int dtx = cx << 10;
+                    for (int cz = 1; cz < 15; cz++) {
+                        int tz = cz << 7;
+                        int dtz = cz << 6;
+                        int xz = tx | tz;
+                        int dxz = dtx | dtz;
+                        for (int y = 1; y <= antixray.height && y < 255; y++) {
+                            int xy = tx | y;
+                            int zy = tz | y;
+                            if (!antixray.filters.contains(blocks[((cx + 1) << 11) | zy] & 0xff)
+                                    && !antixray.filters.contains(blocks[((cx - 1) << 11) | zy] & 0xff)
+                                    && !antixray.filters.contains(blocks[xy | ((cz + 1) << 7)] & 0xff)
+                                    && !antixray.filters.contains(blocks[xy | ((cz - 1) << 7)] & 0xff)
+                                    && !antixray.filters.contains(blocks[xz | (y + 1)] & 0xff)
+                                    && !antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
+                                int index = xz | y;
+                                if (antixray.mode) {
+                                    blocks[index] = (byte) (antixray.ores.get(index % maxSize) & 0xff);
+                                } else if (antixray.ores.contains(blocks[index] & 0xff)) {
+                                    switch (level.getDimension()) {
+                                        case Level.DIMENSION_OVERWORLD:
+                                            blocks[index] = (byte) (antixray.fake_o & 0xff);
+                                            break;
+                                        case Level.DIMENSION_NETHER:
+                                            blocks[index] = (byte) (antixray.fake_n & 0xff);
+                                            break;
+                                        case Level.DIMENSION_THE_END:
+                                        default:
+                                            blocks[index] = 0;
+                                            break;
+                                    }
+                                } else {
+                                    continue;
+                                }
+                                int dataIndex = dxz | (y >> 1);
+                                int blockData = data[dataIndex] & 0xff;
+                                boolean flag = (y & 1) == 0;
+                                if ((flag ? data[dataIndex] & 0xf : data[dataIndex] >> 4) != 0) {
+                                    data[dataIndex] = flag ? (byte) (blockData & 0xf0) : (byte) (blockData & 0xf);
+                                }
                             }
                         }
                     }
                 }
+                System.arraycopy(blocks, 0, merged, 0, 32768);
+                System.arraycopy(data, 0, merged, 32768, 16384);
+                if (antixray.localCache) {
+                    byte[] cache = new byte[49152];
+                    System.arraycopy(merged, 0, cache, 0, 49152);
+                    antixray.createCache(hash, cache);
+                }
+            }
+            System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49152, 16384);
+            System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65536, 16384);
+            System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81920, 256);
+            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82176, 256);
+            BinaryStream stream = new BinaryStream(merged);
+            if (extraData != null) {
+                stream.put(extraData.getBuffer());
+            } else {
+                stream.putLInt(0); //4
+            }
+            if (tiles.length != 0) {
+                stream.put(tiles);
+            }
+            this.setResult(stream.getBuffer());
+        }
+
+        @Override
+        public void onCompletion(Server server) {
+            if (this.hasResult()) {
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult());
+            } else {
+                chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
         }
-        BinaryStream stream = new BinaryStream();
-        stream.put(blocks);
-        stream.put(data);
-        stream.put(chunk.getBlockSkyLightArray());
-        stream.put(chunk.getBlockLightArray());
-        stream.put(chunk.getHeightMapArray());
-        stream.put(chunk.getBiomeIdArray());
-        if (extraData != null) {
-            stream.put(extraData.getBuffer());
-        } else {
-            stream.putLInt(0);
-        }
-        stream.put(tiles);
-        this.chunkRequestCallback(timestamp, chunkX, chunkZ, 16, stream.getBuffer());
     }
 
     private static class Entry {
@@ -439,7 +608,7 @@ class WorldHandler extends NukkitRunnable {
         final long timestamp;
         final BatchPacket cache;
 
-        Entry(long timestamp, BatchPacket cache) {
+        private Entry(long timestamp, BatchPacket cache) {
             this.timestamp = timestamp;
             this.cache = cache;
         }
