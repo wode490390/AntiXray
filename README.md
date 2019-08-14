@@ -1,19 +1,29 @@
 # AntiXray
-[![](http://i.loli.net/2019/01/27/5c4d21504445e.png)](http://www.mcbbs.net/thread-838490-1-1.html "假矿")
+[![](https://i.loli.net/2019/01/27/5c4d21504445e.png)](http://www.mcbbs.net/thread-838490-1-1.html "Texture Pack")
 
-Anti X-Ray cheat plugin for Nukkit
+Anti X-Ray plugin for Nukkit.
+
+This plugin is used to counter X-RAY Client add-ons.
+
+It modifies data that are sent to clients to hide blocks.
+
+It does not manipulate blocks in the level file, thus is safe to use.
 
 Please see [mcbbs](http://www.mcbbs.net/thread-838490-1-1.html) for more information.
+
+[![](https://i.loli.net/2019/08/14/2Wm3haAxELGOB15.png)](http://www.mcbbs.net/thread-838490-1-1.html "Toolbox")
 ## Permissions
-| Permission | Description |
-| - | - |
-| antixray.whitelist | Allow player to cheat with X-Ray |
+| Permission | Description | Default |
+| - | - | - |
+| antixray.whitelist | Allow player to cheat with X-Ray | `OP` |
 ## config.yml
 ```yaml
 # The smaller the value, the higher the performance (1~255)
 scan-height-limit: 64
 # Save a serialized copy of the chunk in memory for faster sending
-cache-chunks: true
+memory-cache: true
+# Save a serialized copy of the chunk blocks in disk for faster sending
+local-cache: true
 # Set this to false to use hidden mode
 obfuscator-mode: true
 # The fake block is used to replace ores in different dimensions (hidden mode only)

@@ -12,8 +12,20 @@ import cn.nukkit.level.Level;
 import cn.nukkit.level.Position;
 import cn.nukkit.level.format.FullChunk;
 import cn.nukkit.math.Vector3;
+import cn.nukkit.nbt.stream.FastByteArrayOutputStream;
 import cn.nukkit.network.protocol.UpdateBlockPacket;
 import cn.nukkit.plugin.PluginBase;
+import cn.nukkit.scheduler.AsyncTask;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -22,14 +34,24 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
+import java.util.zip.Inflater;
+import java.util.zip.InflaterInputStream;
+import net.openhft.hashing.LongHashFunction;
 
 public class AntiXray extends PluginBase implements Listener {
 
     public final static String PERMISSION_WHITELIST = "antixray.whitelist";
 
+    static LongHashFunction XX64;
+
+    static File CACHE_DIR;
+
     int height;
     boolean mode;
-    boolean cache;
+    boolean memoryCache;
+    boolean localCache;
     int fake_o;
     int fake_n;
     List<Integer> ores;
@@ -46,70 +68,99 @@ public class AntiXray extends PluginBase implements Listener {
 
         }
         this.saveDefaultConfig();
-        String t = "scan-height-limit";
+        String node = "scan-height-limit";
         try {
-            this.height = this.getConfig().getInt(t, 64);
+            this.height = this.getConfig().getInt(node, 64);
         } catch (Exception e) {
             this.height = 64;
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
         if (this.height < 1) {
             this.height = 1;
         } else if (this.height > 255) {
             this.height = 255;
         }
-        t = "cache-chunks";
+        node = "memory-cache";
         try {
-            this.cache = this.getConfig().getBoolean(t, true);
+            this.memoryCache = this.getConfig().getBoolean(node, true);
         } catch (Exception e) {
-            this.cache = true;
-            this.logLoadException(t);
+            this.memoryCache = true;
+            this.logLoadException(node);
         }
-        t = "obfuscator-mode";
+        node = "cache-chunks"; //compatible
         try {
-            this.mode = this.getConfig().getBoolean(t, true);
+            this.memoryCache = this.getConfig().getBoolean(node, true);
+        } catch (Exception e) {
+            this.memoryCache = true;
+            this.logLoadException(node);
+        }
+        node = "local-cache";
+        try {
+            this.localCache = this.getConfig().getBoolean(node, true);
+        } catch (Exception e) {
+            this.localCache = true;
+            this.logLoadException(node);
+        }
+        node = "obfuscator-mode";
+        try {
+            this.mode = this.getConfig().getBoolean(node, true);
         } catch (Exception e) {
             this.mode = true;
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
-        t = "overworld-fake-block";
+        node = "overworld-fake-block";
         try {
-            this.fake_o = this.getConfig().getInt(t, 1);
+            this.fake_o = this.getConfig().getInt(node, 1);
         } catch (Exception e) {
             this.fake_o = 1;
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
-        t = "nether-fake-block";
+        node = "nether-fake-block";
         try {
-            this.fake_n = this.getConfig().getInt(t, 87);
+            this.fake_n = this.getConfig().getInt(node, 87);
         } catch (Exception e) {
             this.fake_n = 87;
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
-        t = "protect-worlds";
+        node = "protect-worlds";
         try {
-            this.worlds = this.getConfig().getStringList(t);
+            this.worlds = this.getConfig().getStringList(node);
         } catch (Exception e) {
             this.worlds = new ArrayList<>();
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
-        t = "ores";
+        node = "ores";
         try {
-            this.ores = this.getConfig().getIntegerList(t);
+            this.ores = this.getConfig().getIntegerList(node);
         } catch (Exception e) {
             this.ores = new ArrayList<>();
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
-        t = "filters";
+        node = "filters";
         try {
-            this.filters = this.getConfig().getIntegerList(t);
+            this.filters = this.getConfig().getIntegerList(node);
         } catch (Exception e) {
             this.filters = new ArrayList<>();
-            this.logLoadException(t);
+            this.logLoadException(node);
         }
         if (!this.worlds.isEmpty() && !this.ores.isEmpty()) {
+            if (this.localCache) {
+                CACHE_DIR = new File(this.getDataFolder(), "cache");
+                if (!CACHE_DIR.exists()) {
+                    CACHE_DIR.mkdirs();
+                } else if (!CACHE_DIR.isDirectory()) {
+                    CACHE_DIR.delete();
+                    CACHE_DIR.mkdirs();
+                }
+                if (!CACHE_DIR.exists() || !CACHE_DIR.isDirectory()) {
+                    this.localCache = false;
+                    this.getLogger().warning("Failed to initialize cache! Disabled cache.");
+                } else {
+                    XX64 = LongHashFunction.xx();
+                }
+            }
             this.getServer().getPluginManager().registerEvents(this, this);
-            if (this.cache) {
+            if (this.memoryCache) {
                 this.getServer().getPluginManager().registerEvents(new CleanerListener(), this);
             }
         }
@@ -176,8 +227,55 @@ public class AntiXray extends PluginBase implements Listener {
         }
     }
 
+    long getCacheHash(byte[] buffer) {
+        return XX64.hashBytes(buffer);
+    }
+
+    boolean hasCache(long hash) {
+        File file = new File(CACHE_DIR, String.valueOf(hash));
+        return file.exists() && !file.isDirectory();
+    }
+
+    void createCache(long hash, byte[] buffer) {
+        this.getServer().getScheduler().scheduleAsyncTask(this, new CacheWriteTask(hash, buffer));
+    }
+
+    byte[] readCache(long hash) {
+        File file = new File(CACHE_DIR, String.valueOf(hash));
+        try {
+            if (!file.exists() || file.isDirectory()) {
+                throw new FileNotFoundException();
+            } else if (file.length() == 0) {
+                throw new EOFException();
+            }
+            try (InputStream inputStream = new InflaterInputStream(new BufferedInputStream(new FileInputStream(file)), new Inflater(true)); FastByteArrayOutputStream outputStream = new FastByteArrayOutputStream(1024)) {
+                byte[] temp = new byte[1024];
+                int length;
+                while ((length = inputStream.read(temp)) != -1) {
+                    outputStream.write(temp, 0, length);
+                }
+                return outputStream.toByteArray();
+            }
+        } catch (IOException e) {
+            this.getLogger().debug("Unable to read cache file", e);
+        }
+        return null;
+    }
+
     private void logLoadException(String node) {
         this.getLogger().alert("An error occurred while reading the configuration '" + node + "'. Use the default value.");
+    }
+
+    private static boolean deleteFolder(File file) {
+        if (file.isDirectory()) {
+            for (String children : file.list()) {
+                boolean success = deleteFolder(new File(file, children));
+                if (!success) {
+                    return false;
+                }
+            }
+        }
+        return file.delete();
     }
 
     public class CleanerListener implements Listener {
@@ -195,6 +293,40 @@ public class AntiXray extends PluginBase implements Listener {
                 handlers.putIfAbsent(level, new WorldHandler(AntiXray.this, level));
                 handlers.get(level).clearCache(chunk.getX(), chunk.getZ());
                 AntiXrayTimings.ChunkUnloadEventTimer.stopTiming();
+            }
+        }
+    }
+
+    private class CacheWriteTask extends AsyncTask {
+
+        private final long hash;
+        private final byte[] buffer;
+
+        private CacheWriteTask(long hash, byte[] buffer) {
+            this.hash = hash;
+            this.buffer = buffer;
+        }
+
+        @Override
+        public void onRun() {
+            try {
+                File file = new File(CACHE_DIR, String.valueOf(hash));
+                if (!file.exists()) {
+                    file.createNewFile();
+                } else if (file.isDirectory()) {
+                    deleteFolder(file);
+                    file.createNewFile();
+                }
+                try (DeflaterOutputStream outputStream = new DeflaterOutputStream(new BufferedOutputStream(new FileOutputStream(file)), new Deflater(Deflater.BEST_COMPRESSION, true)); InputStream inputStream = new ByteArrayInputStream(this.buffer)) {
+                    byte[] temp = new byte[1024];
+                    int length;
+                    while ((length = inputStream.read(temp)) != -1) {
+                        outputStream.write(temp, 0, length);
+                    }
+                    outputStream.finish();
+                }
+            } catch (IOException e) {
+                getLogger().debug("Unable to save cache file", e);
             }
         }
     }
