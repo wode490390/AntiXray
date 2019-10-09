@@ -25,6 +25,7 @@ import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
 import cn.nukkit.event.block.BlockUpdateEvent;
 import cn.nukkit.event.level.ChunkUnloadEvent;
+import cn.nukkit.event.level.LevelUnloadEvent;
 import cn.nukkit.event.player.PlayerChunkRequestEvent;
 import cn.nukkit.level.GlobalBlockPalette;
 import cn.nukkit.level.Level;
@@ -35,6 +36,7 @@ import cn.nukkit.nbt.stream.FastByteArrayOutputStream;
 import cn.nukkit.network.protocol.UpdateBlockPacket;
 import cn.nukkit.plugin.PluginBase;
 import cn.nukkit.scheduler.AsyncTask;
+import cn.nukkit.utils.Config;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -47,12 +49,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.Inflater;
@@ -77,7 +78,7 @@ public class AntiXray extends PluginBase implements Listener {
     List<Integer> filters;
     private List<String> worlds;
 
-    private final Map<Level, WorldHandler> handlers = new ConcurrentHashMap<>();
+    private final Map<Level, WorldHandler> handlers = new HashMap<>();
 
     @Override
     public void onEnable() {
@@ -87,12 +88,13 @@ public class AntiXray extends PluginBase implements Listener {
 
         }
         this.saveDefaultConfig();
+        Config config = this.getConfig();
         String node = "scan-height-limit";
         try {
-            this.height = this.getConfig().getInt(node, 64);
+            this.height = config.getInt(node, 64);
         } catch (Exception e) {
             this.height = 64;
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         if (this.height < 1) {
             this.height = 1;
@@ -100,68 +102,72 @@ public class AntiXray extends PluginBase implements Listener {
             this.height = 255;
         }
         node = "memory-cache";
-        try {
-            this.memoryCache = this.getConfig().getBoolean(node, true);
-        } catch (Exception e) {
-            this.memoryCache = true;
-            this.logLoadException(node);
-        }
-        node = "cache-chunks"; //compatible
-        try {
-            this.memoryCache = this.getConfig().getBoolean(node, true);
-        } catch (Exception e) {
-            this.memoryCache = true;
-            this.logLoadException(node);
+        if (config.exists(node)) {
+            try {
+                this.memoryCache = config.getBoolean(node, true);
+            } catch (Exception e) {
+                this.memoryCache = true;
+                this.logLoadException(node, e);
+            }
+        } else { //compatible
+            node = "cache-chunks";
+            try {
+                this.memoryCache = config.getBoolean(node, true);
+            } catch (Exception e) {
+                this.memoryCache = true;
+                this.logLoadException("memory-cache", e);
+            }
         }
         node = "local-cache";
         try {
-            this.localCache = this.getConfig().getBoolean(node, true);
+            this.localCache = config.getBoolean(node, true);
         } catch (Exception e) {
             this.localCache = true;
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         node = "obfuscator-mode";
         try {
-            this.mode = this.getConfig().getBoolean(node, true);
+            this.mode = config.getBoolean(node, true);
         } catch (Exception e) {
             this.mode = true;
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         node = "overworld-fake-block";
         try {
-            this.fake_o = this.getConfig().getInt(node, 1);
+            this.fake_o = config.getInt(node, 1);
         } catch (Exception e) {
             this.fake_o = 1;
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         node = "nether-fake-block";
         try {
-            this.fake_n = this.getConfig().getInt(node, 87);
+            this.fake_n = config.getInt(node, 87);
         } catch (Exception e) {
             this.fake_n = 87;
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         node = "protect-worlds";
         try {
-            this.worlds = this.getConfig().getStringList(node);
+            this.worlds = config.getStringList(node);
         } catch (Exception e) {
             this.worlds = new ArrayList<>();
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         node = "ores";
         try {
-            this.ores = this.getConfig().getIntegerList(node);
+            this.ores = config.getIntegerList(node);
         } catch (Exception e) {
             this.ores = new ArrayList<>();
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
         node = "filters";
         try {
-            this.filters = this.getConfig().getIntegerList(node);
+            this.filters = config.getIntegerList(node);
         } catch (Exception e) {
             this.filters = new ArrayList<>();
-            this.logLoadException(node);
+            this.logLoadException(node, e);
         }
+
         if (!this.worlds.isEmpty() && !this.ores.isEmpty()) {
             if (this.localCache) {
                 CACHE_DIR = new File(this.getDataFolder(), "cache");
@@ -187,15 +193,18 @@ public class AntiXray extends PluginBase implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)
     public void onPlayerChunkRequest(PlayerChunkRequestEvent event) {
-        AntiXrayTimings.BlockUpdateEventTimer.startTiming();
         Player player = event.getPlayer();
         Level level = player.getLevel();
         if (!player.hasPermission(PERMISSION_WHITELIST) && this.worlds.contains(level.getName()) && player.getLoaderId() > 0) {
             event.setCancelled();
-            this.handlers.putIfAbsent(level, new WorldHandler(this, level));
-            this.handlers.get(level).requestChunk(event.getChunkX(), event.getChunkZ(), player);
+            WorldHandler handler = this.handlers.get(level);
+            if (handler == null) {
+                handler = new WorldHandler(this, level);
+                handler.start();
+                this.handlers.put(level, handler);
+            }
+            handler.requestChunk(event.getChunkX(), event.getChunkZ(), player);
         }
-        AntiXrayTimings.BlockUpdateEventTimer.stopTiming();
     }
 
     @EventHandler
@@ -203,7 +212,6 @@ public class AntiXray extends PluginBase implements Listener {
         Position position = event.getBlock();
         Level level = position.getLevel();
         if (this.worlds.contains(level.getName())) {
-            AntiXrayTimings.BlockUpdateEventTimer.startTiming();
             List<UpdateBlockPacket> packets = new ArrayList<>();
             for (Vector3 vector : new Vector3[]{
                     position.add(1),
@@ -222,7 +230,7 @@ public class AntiXray extends PluginBase implements Listener {
                 UpdateBlockPacket packet = new UpdateBlockPacket();
                 try {
                     packet.blockRuntimeId = GlobalBlockPalette.getOrCreateRuntimeId(level.getFullBlock(x, y, z));
-                } catch (NoSuchElementException tryAgain) {
+                } catch (Exception tryAgain) {
                     try {
                         packet.blockRuntimeId = GlobalBlockPalette.getOrCreateRuntimeId(level.getBlockIdAt(x, y, z), 0);
                     } catch (Exception ex) {
@@ -242,7 +250,16 @@ public class AntiXray extends PluginBase implements Listener {
                         .forEach(player -> players.add(player));
                 this.getServer().batchPackets(players.toArray(new Player[0]), packets.toArray(new UpdateBlockPacket[0]));
             }
-            AntiXrayTimings.BlockUpdateEventTimer.stopTiming();
+        }
+    }
+
+    @EventHandler
+    public void onLevelUnload(LevelUnloadEvent event) {
+        Level level = event.getLevel();
+        WorldHandler handler = this.handlers.get(level);
+        if (handler != null) {
+            handler.interrupt();
+            this.handlers.remove(level);
         }
     }
 
@@ -281,8 +298,8 @@ public class AntiXray extends PluginBase implements Listener {
         return null;
     }
 
-    private void logLoadException(String node) {
-        this.getLogger().alert("An error occurred while reading the configuration '" + node + "'. Use the default value.");
+    private void logLoadException(String node, Exception ex) {
+        this.getLogger().alert("Failed to get the configuration '" + node + "'. Use the default value.", ex);
     }
 
     private static boolean deleteFolder(File file) {
@@ -305,13 +322,10 @@ public class AntiXray extends PluginBase implements Listener {
 
         @EventHandler
         public void onChunkUnload(ChunkUnloadEvent event) {
-            Level level = event.getLevel();
-            if (worlds.contains(level.getName())) {
-                AntiXrayTimings.ChunkUnloadEventTimer.startTiming();
+            WorldHandler handler = AntiXray.this.handlers.get(event.getLevel());
+            if (handler != null) {
                 FullChunk chunk = event.getChunk();
-                handlers.putIfAbsent(level, new WorldHandler(AntiXray.this, level));
-                handlers.get(level).clearCache(chunk.getX(), chunk.getZ());
-                AntiXrayTimings.ChunkUnloadEventTimer.stopTiming();
+                handler.clearCache(chunk.getX(), chunk.getZ());
             }
         }
     }
@@ -336,6 +350,7 @@ public class AntiXray extends PluginBase implements Listener {
                     deleteFolder(file);
                     file.createNewFile();
                 }
+
                 try (DeflaterOutputStream outputStream = new DeflaterOutputStream(new BufferedOutputStream(new FileOutputStream(file)), new Deflater(Deflater.BEST_COMPRESSION, true)); InputStream inputStream = new ByteArrayInputStream(this.buffer)) {
                     byte[] temp = new byte[1024];
                     int length;
@@ -345,7 +360,7 @@ public class AntiXray extends PluginBase implements Listener {
                     outputStream.finish();
                 }
             } catch (IOException e) {
-                getLogger().debug("Unable to save cache file", e);
+                AntiXray.this.getLogger().debug("Unable to save cache file", e);
             }
         }
     }

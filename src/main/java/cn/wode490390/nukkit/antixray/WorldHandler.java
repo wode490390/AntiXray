@@ -36,13 +36,10 @@ import cn.nukkit.nbt.tag.CompoundTag;
 import cn.nukkit.network.protocol.BatchPacket;
 import cn.nukkit.network.protocol.DataPacket;
 import cn.nukkit.scheduler.AsyncTask;
-import cn.nukkit.scheduler.NukkitRunnable;
 import cn.nukkit.utils.BinaryStream;
 import cn.nukkit.utils.ChunkException;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -52,21 +49,22 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-class WorldHandler extends NukkitRunnable {
+class WorldHandler extends Thread {
 
     private static final byte[] EMPTY_SECTION = new byte[6144];
 
-    private final Map<Long, Int2ObjectMap<Player>> chunkSendQueue = new ConcurrentHashMap<>();
-    private final LongSet chunkSendTasks = new LongOpenHashSet();
+    private final Map<Long, Map<Integer, Player>> chunkSendQueue = new ConcurrentHashMap<>();
+    private final Set<Long> chunkSendTasks = new LongOpenHashSet();
 
     private Map<Long, Entry> caches;
+    private Set<Long> cacheTasks;
 
     private final Level level;
 
     private final AntiXray antixray;
-    //private final AntiXrayTimings timings;
 
     private final int maxSectionY;
     private final int maxSize;
@@ -74,18 +72,25 @@ class WorldHandler extends NukkitRunnable {
     WorldHandler(AntiXray antixray, Level level) {
         this.level = level;
         this.antixray = antixray;
-        //this.timings = new AntiXrayTimings(this.level);
         if (this.antixray.memoryCache) {
             this.caches = new ConcurrentHashMap<>();
+            this.cacheTasks = new LongOpenHashSet();
         }
         this.maxSectionY = this.antixray.height >> 4;
         this.maxSize = this.antixray.ores.size() - 1;
-        this.runTaskTimer(this.antixray, 0, 1);
+        this.setName("AntiXray Handler (" + level.getName() + ")");
     }
 
     @Override
     public void run() {
-        this.processChunkRequest();
+        while (this.antixray.isEnabled()) {
+            this.processChunkRequest();
+            try {
+                sleep(50);
+            } catch (InterruptedException ignore) {
+
+            }
+        }
     }
 
     public void requestChunk(int chunkX, int chunkZ, Player player) {
@@ -95,11 +100,12 @@ class WorldHandler extends NukkitRunnable {
     }
 
     public void clearCache(int chunkX, int chunkZ) {
-        this.caches.remove(Level.chunkHash(chunkX, chunkZ));
+        long index = Level.chunkHash(chunkX, chunkZ);
+        this.caches.remove(index);
+        this.cacheTasks.remove(index);
     }
 
     private void processChunkRequest() {
-        //this.timings.ChunkSendTimer.startTiming();
         Iterator<Long> iterator = this.chunkSendQueue.keySet().iterator();
         while (iterator.hasNext()) {
             long index = iterator.next();
@@ -109,6 +115,7 @@ class WorldHandler extends NukkitRunnable {
             int chunkX = Level.getHashX(index);
             int chunkZ = Level.getHashZ(index);
             this.chunkSendTasks.add(index);
+
             if (this.antixray.memoryCache) {
                 BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ);
                 Entry entry;
@@ -116,8 +123,9 @@ class WorldHandler extends NukkitRunnable {
                     this.sendChunk(chunkX, chunkZ, index, entry.cache);
                     continue;
                 }
+                this.cacheTasks.add(index);
             }
-            //this.timings.ChunkSendPrepareTimer.startTiming();
+
             AsyncTask task = null;
             LevelProvider provider = this.level.getProvider();
             if (provider instanceof Anvil) {
@@ -132,9 +140,7 @@ class WorldHandler extends NukkitRunnable {
             if (task != null) {
                 this.antixray.getServer().getScheduler().scheduleAsyncTask(this.antixray, task);
             }
-            //this.timings.ChunkSendPrepareTimer.stopTiming();
         }
-        //this.timings.ChunkSendTimer.stopTiming();
     }
 
     private void sendChunk(int chunkX, int chunkZ, long index, DataPacket packet) {
@@ -148,18 +154,19 @@ class WorldHandler extends NukkitRunnable {
     }
 
     private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload) {
-        //this.timings.ChunkSendTimer.startTiming();
         long index = Level.chunkHash(chunkX, chunkZ);
+
         if (this.antixray.memoryCache) {
             BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, subChunkCount, payload);
             BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ, false);
-            if (chunk != null && chunk.getChanges() <= timestamp) {
+            if (chunk != null && chunk.getChanges() <= timestamp && this.cacheTasks.contains(index)) {
                 this.caches.put(index, new Entry(timestamp, packet));
+                this.cacheTasks.remove(index);
             }
             this.sendChunk(chunkX, chunkZ, index, packet);
-            //this.timings.ChunkSendTimer.stopTiming();
             return;
         }
+
         if (this.chunkSendTasks.contains(index)) {
             this.chunkSendQueue.get(index).values().parallelStream()
                     .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
@@ -167,7 +174,6 @@ class WorldHandler extends NukkitRunnable {
             this.chunkSendQueue.remove(index);
             this.chunkSendTasks.remove(index);
         }
-        //this.timings.ChunkSendTimer.stopTiming();
     }
 
     private void chunkRequestFailed(int chunkX, int chunkZ, Throwable t) {
@@ -199,6 +205,7 @@ class WorldHandler extends NukkitRunnable {
                 return;
             }
             this.timestamp = chunk.getChanges();
+
             byte[] tiles = new byte[0];
             if (!chunk.getBlockEntities().isEmpty()) {
                 List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
@@ -212,6 +219,7 @@ class WorldHandler extends NukkitRunnable {
                     return;
                 }
             }
+
             Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
             BinaryStream extraData = null;
             if (!extra.isEmpty()) {
@@ -222,6 +230,7 @@ class WorldHandler extends NukkitRunnable {
                     extraData.putLShort(entry.getValue());
                 }
             }
+
             this.count = 0;
             ChunkSection[] sections = chunk.getSections();
             for (int i = sections.length - 1; i >= 0; i--) {
@@ -363,6 +372,7 @@ class WorldHandler extends NukkitRunnable {
                 return;
             }
             this.timestamp = chunk.getChanges();
+
             byte[] tiles = new byte[0];
             if (!chunk.getBlockEntities().isEmpty()) {
                 List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
@@ -376,6 +386,7 @@ class WorldHandler extends NukkitRunnable {
                     return;
                 }
             }
+
             Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
             BinaryStream extraData = null;
             if (!extra.isEmpty()) {
@@ -386,6 +397,7 @@ class WorldHandler extends NukkitRunnable {
                     extraData.putLShort(extra.get(key));
                 }
             }
+
             byte[] merged = new byte[82432]; //32768 + 16384 + 16384 + 16384 + 256 + 256
             byte[] blocks = chunk.getBlockIdArray();
             boolean hit = false;
@@ -503,6 +515,7 @@ class WorldHandler extends NukkitRunnable {
                 return;
             }
             this.timestamp = chunk.getChanges();
+
             byte[] tiles = new byte[0];
             if (!chunk.getBlockEntities().isEmpty()) {
                 List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
@@ -516,6 +529,7 @@ class WorldHandler extends NukkitRunnable {
                     return;
                 }
             }
+
             Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
             BinaryStream extraData = null;
             if (!extra.isEmpty()) {
@@ -526,6 +540,7 @@ class WorldHandler extends NukkitRunnable {
                     extraData.putLShort(entry.getValue());
                 }
             }
+
             byte[] merged = new byte[82432];
             byte[] blocks = chunk.getBlockIdArray();
             boolean hit = false;
