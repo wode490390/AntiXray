@@ -37,6 +37,12 @@ import cn.nukkit.network.protocol.UpdateBlockPacket;
 import cn.nukkit.plugin.PluginBase;
 import cn.nukkit.scheduler.AsyncTask;
 import cn.nukkit.utils.Config;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.ints.IntList;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -47,10 +53,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -74,11 +76,11 @@ public class AntiXray extends PluginBase implements Listener {
     boolean localCache;
     int fake_o;
     int fake_n;
-    List<Integer> ores;
-    List<Integer> filters;
+    IntList ores;
+    IntList filters;
     private List<String> worlds;
 
-    private final Map<Level, WorldHandler> handlers = new HashMap<>();
+    private final Map<Level, WorldHandler> handlers = Maps.newHashMap();
 
     @Override
     public void onEnable() {
@@ -150,25 +152,24 @@ public class AntiXray extends PluginBase implements Listener {
         try {
             this.worlds = config.getStringList(node);
         } catch (Exception e) {
-            this.worlds = new ArrayList<>();
             this.logLoadException(node, e);
         }
         node = "ores";
         try {
-            this.ores = config.getIntegerList(node);
+            this.ores = new IntArrayList(new IntOpenHashSet(config.getIntegerList(node)));
         } catch (Exception e) {
-            this.ores = new ArrayList<>();
-            this.logLoadException(node, e);
-        }
-        node = "filters";
-        try {
-            this.filters = config.getIntegerList(node);
-        } catch (Exception e) {
-            this.filters = new ArrayList<>();
             this.logLoadException(node, e);
         }
 
-        if (!this.worlds.isEmpty() && !this.ores.isEmpty()) {
+        if (this.worlds != null && this.ores != null && !this.worlds.isEmpty() && !this.ores.isEmpty()) {
+            node = "filters";
+            try {
+                this.filters = new IntArrayList(new IntOpenHashSet(config.getIntegerList(node)));
+            } catch (Exception e) {
+                this.filters = new IntArrayList(0);
+                this.logLoadException(node, e);
+            }
+
             if (this.localCache) {
                 CACHE_DIR = new File(this.getDataFolder(), "cache");
                 if (!CACHE_DIR.exists()) {
@@ -208,11 +209,12 @@ public class AntiXray extends PluginBase implements Listener {
     }
 
     @EventHandler
+    //TODO: Use BlockBreakEvent instead of BlockUpdateEvent
     public void onBlockUpdate(BlockUpdateEvent event) {
         Position position = event.getBlock();
         Level level = position.getLevel();
         if (this.worlds.contains(level.getName())) {
-            List<UpdateBlockPacket> packets = new ArrayList<>();
+            List<UpdateBlockPacket> packets = new ObjectArrayList<>();
             for (Vector3 vector : new Vector3[]{
                     position.add(1),
                     position.add(-1),
@@ -244,11 +246,12 @@ public class AntiXray extends PluginBase implements Listener {
                 packets.add(packet);
             }
             if (packets.size() > 0) {
-                Set<Player> players = Collections.synchronizedSet(new HashSet<>());
-                level.getChunkPlayers(position.getChunkX(), position.getChunkZ()).values().parallelStream()
+                /*Set<Player> players = Sets.newHashSet();
+                level.getChunkPlayers(position.getChunkX(), position.getChunkZ()).values().stream()
                         .filter(player -> !player.hasPermission(PERMISSION_WHITELIST))
                         .forEach(player -> players.add(player));
-                this.getServer().batchPackets(players.toArray(new Player[0]), packets.toArray(new UpdateBlockPacket[0]));
+                this.getServer().batchPackets(players.toArray(new Player[0]), packets.toArray(new UpdateBlockPacket[0]));*/
+                this.getServer().batchPackets(level.getChunkPlayers(position.getChunkX(), position.getChunkZ()).values().toArray(new Player[0]), packets.toArray(new UpdateBlockPacket[0]));
             }
         }
     }
@@ -315,10 +318,6 @@ public class AntiXray extends PluginBase implements Listener {
     }
 
     public class CleanerListener implements Listener {
-
-        private CleanerListener() {
-
-        }
 
         @EventHandler
         public void onChunkUnload(ChunkUnloadEvent event) {

@@ -36,28 +36,28 @@ import cn.nukkit.nbt.tag.CompoundTag;
 import cn.nukkit.network.protocol.BatchPacket;
 import cn.nukkit.network.protocol.DataPacket;
 import cn.nukkit.scheduler.AsyncTask;
+import cn.nukkit.scheduler.PluginTask;
 import cn.nukkit.utils.BinaryStream;
 import cn.nukkit.utils.ChunkException;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.ByteOrder;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
-class WorldHandler extends Thread {
+public class WorldHandler extends Thread {
 
     private static final byte[] EMPTY_SECTION = new byte[6144];
 
-    private final Map<Long, Map<Integer, Player>> chunkSendQueue = new ConcurrentHashMap<>();
-    private final Set<Long> chunkSendTasks = new LongOpenHashSet();
+    private final Map<Long, Map<Integer, Player>> chunkSendQueue = Maps.newConcurrentMap();
+    private final Set<Long> chunkSendTasks = Sets.newConcurrentHashSet();
 
     private Map<Long, Entry> caches;
     private Set<Long> cacheTasks;
@@ -69,16 +69,17 @@ class WorldHandler extends Thread {
     private final int maxSectionY;
     private final int maxSize;
 
-    WorldHandler(AntiXray antixray, Level level) {
+    public WorldHandler(AntiXray antixray, Level level) {
         this.level = level;
         this.antixray = antixray;
         if (this.antixray.memoryCache) {
-            this.caches = new ConcurrentHashMap<>();
-            this.cacheTasks = new LongOpenHashSet();
+            this.caches = Maps.newConcurrentMap();
+            this.cacheTasks = Sets.newConcurrentHashSet();
         }
         this.maxSectionY = this.antixray.height >> 4;
         this.maxSize = this.antixray.ores.size() - 1;
-        this.setName("AntiXray Handler (" + level.getName() + ")");
+        this.setDaemon(true);
+        this.setName("AntiXray");
     }
 
     @Override
@@ -95,7 +96,7 @@ class WorldHandler extends Thread {
 
     public void requestChunk(int chunkX, int chunkZ, Player player) {
         long index = Level.chunkHash(chunkX, chunkZ);
-        this.chunkSendQueue.putIfAbsent(index, new Int2ObjectOpenHashMap<>());
+        this.chunkSendQueue.putIfAbsent(index, Maps.newConcurrentMap());
         this.chunkSendQueue.get(index).put(player.getLoaderId(), player);
     }
 
@@ -120,7 +121,7 @@ class WorldHandler extends Thread {
                 BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ);
                 Entry entry;
                 if (chunk != null && (entry = this.caches.get(index)) != null && chunk.getChanges() <= entry.timestamp) {
-                    this.sendChunk(chunkX, chunkZ, index, entry.cache);
+                    this.sendChunk(chunkX, chunkZ, index, entry.cache, false);
                     continue;
                 }
                 this.cacheTasks.add(index);
@@ -143,32 +144,43 @@ class WorldHandler extends Thread {
         }
     }
 
-    private void sendChunk(int chunkX, int chunkZ, long index, DataPacket packet) {
+    private void sendChunk(int chunkX, int chunkZ, long index, DataPacket packet, boolean isPrimaryThread) {
         if (this.chunkSendTasks.contains(index)) {
-            this.chunkSendQueue.get(index).values().parallelStream()
-                    .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                    .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
-            this.chunkSendQueue.remove(index);
-            this.chunkSendTasks.remove(index);
+            Stream<Player> stream = this.chunkSendQueue.get(index).values().stream();
+            if (isPrimaryThread) {
+                stream.filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
+                        .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
+                this.chunkSendQueue.remove(index);
+                this.chunkSendTasks.remove(index);
+            } else {
+                this.antixray.getServer().getScheduler().scheduleTask(this.antixray, new PluginTask<AntiXray>(this.antixray) {
+                    @Override
+                    public void onRun(int currentTick) {
+                        stream.filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
+                                .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
+                        chunkSendQueue.remove(index);
+                        chunkSendTasks.remove(index);
+                    }
+                });
+            }
         }
     }
 
-    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload) {
+    private void chunkRequestCallback(long timestamp, int chunkX, int chunkZ, int subChunkCount, byte[] payload, BatchPacket cachePacket) {
         long index = Level.chunkHash(chunkX, chunkZ);
 
-        if (this.antixray.memoryCache) {
-            BatchPacket packet = Player.getChunkCacheFromData(chunkX, chunkZ, subChunkCount, payload);
+        if (cachePacket != null) {
             BaseFullChunk chunk = this.level.getChunk(chunkX, chunkZ, false);
             if (chunk != null && chunk.getChanges() <= timestamp && this.cacheTasks.contains(index)) {
-                this.caches.put(index, new Entry(timestamp, packet));
+                this.caches.put(index, new Entry(timestamp, cachePacket));
                 this.cacheTasks.remove(index);
             }
-            this.sendChunk(chunkX, chunkZ, index, packet);
+            this.sendChunk(chunkX, chunkZ, index, cachePacket, true);
             return;
         }
 
         if (this.chunkSendTasks.contains(index)) {
-            this.chunkSendQueue.get(index).values().parallelStream()
+            this.chunkSendQueue.get(index).values().stream()
                     .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
                     .forEach(player -> player.sendChunk(chunkX, chunkZ, subChunkCount, payload));
             this.chunkSendQueue.remove(index);
@@ -190,6 +202,7 @@ class WorldHandler extends Thread {
 
         private long timestamp;
         private int count;
+        private BatchPacket cachePacket;
         private Throwable t;
 
         private AnvilChunkRequestTask(int chunkX, int chunkZ) throws ChunkException {
@@ -208,8 +221,8 @@ class WorldHandler extends Thread {
 
             byte[] tiles = new byte[0];
             if (!chunk.getBlockEntities().isEmpty()) {
-                List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
-                chunk.getBlockEntities().values().parallelStream()
+                List<CompoundTag> tagList = new ObjectArrayList<>();
+                chunk.getBlockEntities().values().stream()
                         .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
                         .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
                 try {
@@ -286,7 +299,7 @@ class WorldHandler extends Thread {
                                             && !antixray.filters.contains(blocks[index + 1] & 0xff)
                                             && !antixray.filters.contains(blocks[index - 1] & 0xff)) {
                                         if (antixray.mode) {
-                                            ids[index] = (byte) (antixray.ores.get(index % maxSize) & 0xff);
+                                            ids[index] = (byte) (antixray.ores.getInt(index % maxSize) & 0xff);
                                         } else if (antixray.ores.contains(blocks[index] & 0xff)) {
                                             switch (level.getDimension()) {
                                                 case Level.DIMENSION_OVERWORLD:
@@ -338,13 +351,20 @@ class WorldHandler extends Thread {
             if (tiles.length != 0) {
                 stream.put(tiles);
             }
-            this.setResult(stream.getBuffer());
+
+            byte[] payload = stream.getBuffer();
+
+            if (antixray.memoryCache) {
+                this.cachePacket = Player.getChunkCacheFromData(this.chunkX, this.chunkZ, this.count, payload);
+            }
+
+            this.setResult(payload);
         }
 
         @Override
         public void onCompletion(Server server) {
             if (this.hasResult()) {
-                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, this.count, (byte[]) this.getResult());
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, this.count, (byte[]) this.getResult(), this.cachePacket);
             } else {
                 chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
@@ -357,6 +377,7 @@ class WorldHandler extends Thread {
         private final int chunkZ;
 
         private long timestamp;
+        private BatchPacket cachePacket;
         private Throwable t;
 
         private LevelDBChunkRequestTask(int chunkX, int chunkZ) {
@@ -375,8 +396,8 @@ class WorldHandler extends Thread {
 
             byte[] tiles = new byte[0];
             if (!chunk.getBlockEntities().isEmpty()) {
-                List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
-                chunk.getBlockEntities().values().parallelStream()
+                List<CompoundTag> tagList = new ObjectArrayList<>();
+                chunk.getBlockEntities().values().stream()
                         .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
                         .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
                 try {
@@ -433,7 +454,7 @@ class WorldHandler extends Thread {
                                     && !antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
                                 int index = xz | y;
                                 if (antixray.mode) {
-                                    blocks[index] = (byte) (antixray.ores.get(index % maxSize) & 0xff);
+                                    blocks[index] = (byte) (antixray.ores.getInt(index % maxSize) & 0xff);
                                 } else if (antixray.ores.contains(blocks[index] & 0xff)) {
                                     switch (level.getDimension()) {
                                         case Level.DIMENSION_OVERWORLD:
@@ -481,13 +502,20 @@ class WorldHandler extends Thread {
             if (tiles.length != 0) {
                 stream.put(tiles);
             }
-            this.setResult(stream.getBuffer());
+
+            byte[] payload = stream.getBuffer();
+
+            if (antixray.memoryCache) {
+                this.cachePacket = Player.getChunkCacheFromData(this.chunkX, this.chunkZ, 16, payload);
+            }
+
+            this.setResult(payload);
         }
 
         @Override
         public void onCompletion(Server server) {
             if (this.hasResult()) {
-                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult());
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult(), this.cachePacket);
             } else {
                 chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
@@ -500,6 +528,7 @@ class WorldHandler extends Thread {
         private final int chunkZ;
 
         private long timestamp;
+        private BatchPacket cachePacket;
         private Throwable t;
 
         private McRegionChunkRequestTask(int chunkX, int chunkZ) throws ChunkException {
@@ -518,8 +547,8 @@ class WorldHandler extends Thread {
 
             byte[] tiles = new byte[0];
             if (!chunk.getBlockEntities().isEmpty()) {
-                List<CompoundTag> tagList = Collections.synchronizedList(new ArrayList<>());
-                chunk.getBlockEntities().values().parallelStream()
+                List<CompoundTag> tagList = new ObjectArrayList<>();
+                chunk.getBlockEntities().values().stream()
                         .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
                         .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
                 try {
@@ -576,7 +605,7 @@ class WorldHandler extends Thread {
                                     && !antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
                                 int index = xz | y;
                                 if (antixray.mode) {
-                                    blocks[index] = (byte) (antixray.ores.get(index % maxSize) & 0xff);
+                                    blocks[index] = (byte) (antixray.ores.getInt(index % maxSize) & 0xff);
                                 } else if (antixray.ores.contains(blocks[index] & 0xff)) {
                                     switch (level.getDimension()) {
                                         case Level.DIMENSION_OVERWORLD:
@@ -624,13 +653,20 @@ class WorldHandler extends Thread {
             if (tiles.length != 0) {
                 stream.put(tiles);
             }
-            this.setResult(stream.getBuffer());
+
+            byte[] payload = stream.getBuffer();
+
+            if (antixray.memoryCache) {
+                this.cachePacket = Player.getChunkCacheFromData(this.chunkX, this.chunkZ, 16, payload);
+            }
+
+            this.setResult(payload);
         }
 
         @Override
         public void onCompletion(Server server) {
             if (this.hasResult()) {
-                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult());
+                chunkRequestCallback(this.timestamp, this.chunkX, this.chunkZ, 16, (byte[]) this.getResult(), this.cachePacket);
             } else {
                 chunkRequestFailed(this.chunkX, this.chunkZ, this.t != null ? this.t : new NullPointerException("Payload cannot be null"));
             }
