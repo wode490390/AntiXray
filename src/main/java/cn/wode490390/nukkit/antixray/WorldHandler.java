@@ -146,22 +146,25 @@ public class WorldHandler extends Thread {
 
     private void sendChunk(int chunkX, int chunkZ, long index, DataPacket packet, boolean isPrimaryThread) {
         if (this.chunkSendTasks.contains(index)) {
-            Stream<Player> stream = this.chunkSendQueue.get(index).values().stream();
-            if (isPrimaryThread) {
-                stream.filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                        .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
-                this.chunkSendQueue.remove(index);
-                this.chunkSendTasks.remove(index);
-            } else {
-                this.antixray.getServer().getScheduler().scheduleTask(this.antixray, new PluginTask<AntiXray>(this.antixray) {
-                    @Override
-                    public void onRun(int currentTick) {
-                        stream.filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                                .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
-                        chunkSendQueue.remove(index);
-                        chunkSendTasks.remove(index);
-                    }
-                });
+            Map<Integer, Player> queue = this.chunkSendQueue.get(index);
+            if (queue != null) {
+                Stream<Player> stream = queue.values().stream();
+                if (isPrimaryThread) {
+                    stream.filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
+                            .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
+                    this.chunkSendTasks.remove(index);
+                    this.chunkSendQueue.remove(index);
+                } else {
+                    this.antixray.getServer().getScheduler().scheduleTask(this.antixray, new PluginTask<AntiXray>(this.antixray) {
+                        @Override
+                        public void onRun(int currentTick) {
+                            stream.filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
+                                    .forEach(player -> player.sendChunk(chunkX, chunkZ, packet));
+                            chunkSendTasks.remove(index);
+                            chunkSendQueue.remove(index);
+                        }
+                    });
+                }
             }
         }
     }
@@ -180,18 +183,21 @@ public class WorldHandler extends Thread {
         }
 
         if (this.chunkSendTasks.contains(index)) {
-            this.chunkSendQueue.get(index).values().stream()
-                    .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
-                    .forEach(player -> player.sendChunk(chunkX, chunkZ, subChunkCount, payload));
-            this.chunkSendQueue.remove(index);
-            this.chunkSendTasks.remove(index);
+            Map<Integer, Player> queue = this.chunkSendQueue.get(index);
+            if (queue != null) {
+                queue.values().stream()
+                        .filter(player -> player.isConnected() && player.usedChunks.containsKey(index))
+                        .forEach(player -> player.sendChunk(chunkX, chunkZ, subChunkCount, payload));
+                this.chunkSendTasks.remove(index);
+                this.chunkSendQueue.remove(index);
+            }
         }
     }
 
     private void chunkRequestFailed(int chunkX, int chunkZ, Throwable t) {
         long index = Level.chunkHash(chunkX, chunkZ);
-        this.chunkSendQueue.remove(index);
         this.chunkSendTasks.remove(index);
+        this.chunkSendQueue.remove(index);
         this.antixray.getLogger().debug("Chunk request failed at: " + chunkX + "," + chunkZ, t);
     }
 
