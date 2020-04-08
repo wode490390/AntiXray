@@ -1,12 +1,12 @@
 main: cn.wode490390.nukkit.antixray.AntiXray
 name: "AntiXray"
-author: "wode490390"
+authors: ["wode490390", "Wode", "Woder", "Wodor"]
 description: "Anti X-Ray cheat plugin for Nukkit"
 website: "http://wode490390.cn/"
 version: "${pom.version}"
-api: ["1.0.7"]
+api: ["1.0.9"]
 load: POSTWORLD
 permissions:
   antixray.whitelist:
-    description: "Allows player to cheat with X-Ray"
+    description: "Allows a player to cheat with X-Ray"
     default: op

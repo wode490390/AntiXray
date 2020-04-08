@@ -1,8 +1,8 @@
-# The smaller the value, the higher the performance (1~255)
-scan-height-limit: 64
+# The smaller the value, the higher the performance (1~16)
+scan-chunk-height-limit: 4
 # Save a serialized copy of the chunk in memory for faster sending
 memory-cache: true
-# Save a serialized copy of the chunk blocks in disk for faster sending
+# Save a serialized copy of the chunk in disk for faster sending
 local-cache: true
 # Set this to false to use hidden mode
 obfuscator-mode: true

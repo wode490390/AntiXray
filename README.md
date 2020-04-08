@@ -1,7 +1,10 @@
-# AntiXray
-[![](https://i.loli.net/2019/01/27/5c4d21504445e.png)](http://www.mcbbs.net/thread-838490-1-1.html "Texture Pack")
-
-Anti X-Ray plugin for Nukkit.
+# Anti X-Ray for Nukkit
+[![Build](https://img.shields.io/circleci/build/github/wode490390/AntiXray/master)](https://circleci.com/gh/wode490390/AntiXray/tree/master)
+[![Release](https://img.shields.io/github/v/release/wode490390/AntiXray)](https://github.com/wode490390/AntiXray/releases)
+[![Release date](https://img.shields.io/github/release-date/wode490390/AntiXray)](https://github.com/wode490390/AntiXray/releases)
+[![MCBBS](https://img.shields.io/badge/-mcbbs-inactive)](https://www.mcbbs.net/thread-838490-1-1.html "假矿")
+<!--[![Servers](https://img.shields.io/bstats/servers/5123)](https://bstats.org/plugin/bukkit/AntiXray/5123)
+[![Players](https://img.shields.io/bstats/players/5123)](https://bstats.org/plugin/bukkit/AntiXray/5123)-->
 
 This plugin is used to counter X-RAY Client add-ons.
 
@@ -9,20 +12,34 @@ It modifies data that are sent to clients to hide blocks.
 
 It does not manipulate blocks in the level file, thus is safe to use.
 
-Please see [mcbbs](http://www.mcbbs.net/thread-838490-1-1.html) for more information.
+[![](https://i.loli.net/2019/01/27/5c4d21504445e.png)](# "Texture Pack")
 
-[![](https://i.loli.net/2019/08/14/2Wm3haAxELGOB15.png)](http://www.mcbbs.net/thread-838490-1-1.html "Toolbox")
+[![](https://i.loli.net/2019/08/14/2Wm3haAxELGOB15.png)](# "Toolbox")
+
+If you found any bugs or have any suggestions, please open an issue on [GitHub Issues](https://github.com/wode490390/AntiXray/issues).
+
+If you love this plugin, please star it on [GitHub](https://github.com/wode490390/AntiXray).
+
+## Download
+- [Releases](https://github.com/wode490390/AntiXray/releases)
+- [Snapshots](https://circleci.com/gh/wode490390/AntiXray)
+
 ## Permissions
 | Permission | Description | Default |
 | - | - | - |
-| antixray.whitelist | Allow player to cheat with X-Ray | `OP` |
-## config.yml
+| antixray.whitelist | Allows a player to cheat with X-Ray | OP |
+
+## Configurations
+
+<details>
+<summary>config.yml</summary>
+
 ```yaml
-# The smaller the value, the higher the performance (1~255)
-scan-height-limit: 64
+# The smaller the value, the higher the performance (1~16)
+scan-chunk-height-limit: 4
 # Save a serialized copy of the chunk in memory for faster sending
 memory-cache: true
-# Save a serialized copy of the chunk blocks in disk for faster sending
+# Save a serialized copy of the chunk in disk for faster sending
 local-cache: true
 # Set this to false to use hidden mode
 obfuscator-mode: true
@@ -190,5 +207,16 @@ filters:
   - 253
   - 254
 ```
+</details>
+
+## Compiling
+1. Install [Maven](https://maven.apache.org/).
+2. Run `mvn clean package`. The compiled JAR can be found in the `target/` directory.
+
+## Metrics Collection
+
+This plugin uses [bStats](https://github.com/wode490390/bStats-Nukkit) - you can opt out using the global bStats config, see the [official website](https://bstats.org/getting-started) for more details.
+
+<!--[![Metrics](https://bstats.org/signatures/bukkit/AntiXray.svg)](https://bstats.org/plugin/bukkit/AntiXray/5123)-->
 
 ###### If I have any grammar and terms error, please correct my wrong :)

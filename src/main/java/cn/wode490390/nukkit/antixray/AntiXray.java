@@ -20,6 +20,7 @@
 package cn.wode490390.nukkit.antixray;
 
 import cn.nukkit.Player;
+import cn.nukkit.block.Block;
 import cn.nukkit.event.EventHandler;
 import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
@@ -37,12 +38,10 @@ import cn.nukkit.network.protocol.UpdateBlockPacket;
 import cn.nukkit.plugin.PluginBase;
 import cn.nukkit.scheduler.AsyncTask;
 import cn.nukkit.utils.Config;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
-import it.unimi.dsi.fastutil.ints.IntArrayList;
-import it.unimi.dsi.fastutil.ints.IntList;
-import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
-import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import net.openhft.hashing.LongHashFunction;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -53,99 +52,104 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
-import net.openhft.hashing.LongHashFunction;
 
 public class AntiXray extends PluginBase implements Listener {
 
     public final static String PERMISSION_WHITELIST = "antixray.whitelist";
 
-    static LongHashFunction XX64;
+    LongHashFunction XX64;
 
-    static File CACHE_DIR;
+    File CACHE_DIR;
 
-    int height;
-    boolean mode;
-    boolean memoryCache;
-    boolean localCache;
-    int fake_o;
-    int fake_n;
-    IntList ores;
-    IntList filters;
+    int height = 4;
+    boolean mode = true;
+    boolean memoryCache = true;
+    boolean localCache = true;
+    int fake_o = Block.STONE;
+    int fake_n = Block.NETHERRACK;
     private List<String> worlds;
+
+    boolean[] ore = new boolean[256];
+    boolean[] filter = new boolean[256];
 
     private final Map<Level, WorldHandler> handlers = Maps.newHashMap();
 
     @Override
     public void onEnable() {
         try {
-            new MetricsLite(this);
-        } catch (Exception ignore) {
+            new MetricsLite(this, 5123);
+        } catch (Throwable ignore) {
 
         }
+
         this.saveDefaultConfig();
         Config config = this.getConfig();
-        String node = "scan-height-limit";
-        try {
-            this.height = config.getInt(node, 64);
-        } catch (Exception e) {
-            this.height = 64;
-            this.logLoadException(node, e);
+
+        String node = "scan-chunk-height-limit";
+        if (config.exists(node)) {
+            try {
+                this.height = config.getInt(node, this.height);
+            } catch (Exception e) {
+                this.logLoadException(node, e);
+            }
+        } else { //compatible
+            node = "scan-height-limit";
+            try {
+                this.height = config.getInt(node, 64) >> 4;
+            } catch (Exception e) {
+                this.logLoadException("scan-chunk-height-limit", e);
+            }
         }
-        if (this.height < 1) {
-            this.height = 1;
-        } else if (this.height > 255) {
-            this.height = 255;
-        }
+        this.height = Math.max(Math.min(this.height, 15), 1);
+
         node = "memory-cache";
         if (config.exists(node)) {
             try {
-                this.memoryCache = config.getBoolean(node, true);
+                this.memoryCache = config.getBoolean(node, this.memoryCache);
             } catch (Exception e) {
-                this.memoryCache = true;
                 this.logLoadException(node, e);
             }
         } else { //compatible
             node = "cache-chunks";
             try {
-                this.memoryCache = config.getBoolean(node, true);
+                this.memoryCache = config.getBoolean(node, this.memoryCache);
             } catch (Exception e) {
-                this.memoryCache = true;
                 this.logLoadException("memory-cache", e);
             }
         }
         node = "local-cache";
         try {
-            this.localCache = config.getBoolean(node, true);
+            this.localCache = config.getBoolean(node, this.localCache);
         } catch (Exception e) {
-            this.localCache = true;
             this.logLoadException(node, e);
         }
         node = "obfuscator-mode";
         try {
-            this.mode = config.getBoolean(node, true);
+            this.mode = config.getBoolean(node, this.mode);
         } catch (Exception e) {
-            this.mode = true;
             this.logLoadException(node, e);
         }
         node = "overworld-fake-block";
         try {
-            this.fake_o = config.getInt(node, 1);
+            this.fake_o = config.getInt(node, this.fake_o) & 0xff;
+            GlobalBlockPalette.getOrCreateRuntimeId(this.fake_o, 0);
         } catch (Exception e) {
-            this.fake_o = 1;
+            this.fake_n = Block.STONE;
             this.logLoadException(node, e);
         }
         node = "nether-fake-block";
         try {
-            this.fake_n = config.getInt(node, 87);
+            this.fake_n = config.getInt(node, this.fake_n) & 0xff;
+            GlobalBlockPalette.getOrCreateRuntimeId(this.fake_n, 0);
         } catch (Exception e) {
-            this.fake_n = 87;
+            this.fake_n = Block.NETHERRACK;
             this.logLoadException(node, e);
         }
         node = "protect-worlds";
@@ -155,23 +159,33 @@ public class AntiXray extends PluginBase implements Listener {
             this.logLoadException(node, e);
         }
         node = "ores";
+        List<Integer> ores = null;
         try {
-            this.ores = new IntArrayList(new IntOpenHashSet(config.getIntegerList(node)));
+            ores = config.getIntegerList(node);
         } catch (Exception e) {
             this.logLoadException(node, e);
         }
 
-        if (this.worlds != null && this.ores != null && !this.worlds.isEmpty() && !this.ores.isEmpty()) {
+        if (this.worlds != null && ores != null && !this.worlds.isEmpty() && !ores.isEmpty()) {
             node = "filters";
+            List<Integer> filters;
             try {
-                this.filters = new IntArrayList(new IntOpenHashSet(config.getIntegerList(node)));
+                filters = config.getIntegerList(node);
             } catch (Exception e) {
-                this.filters = new IntArrayList(0);
+                filters = Collections.emptyList();
                 this.logLoadException(node, e);
             }
 
+            for (int id : ores) {
+                this.ore[id] = true;
+            }
+            for (int id : filters) {
+                this.filter[id] = true;
+            }
+
             if (this.localCache) {
-                CACHE_DIR = new File(this.getDataFolder(), "cache");
+                XX64 = LongHashFunction.xx();
+                CACHE_DIR = new File(new File(this.getDataFolder(), "cache"), Long.toHexString(XX64.hashBytes(GlobalBlockPalette.BLOCK_PALETTE)));
                 if (!CACHE_DIR.exists()) {
                     CACHE_DIR.mkdirs();
                 } else if (!CACHE_DIR.isDirectory()) {
@@ -181,8 +195,6 @@ public class AntiXray extends PluginBase implements Listener {
                 if (!CACHE_DIR.exists() || !CACHE_DIR.isDirectory()) {
                     this.localCache = false;
                     this.getLogger().warning("Failed to initialize cache! Disabled cache.");
-                } else {
-                    XX64 = LongHashFunction.xx();
                 }
             }
             this.getServer().getPluginManager().registerEvents(this, this);
@@ -214,7 +226,7 @@ public class AntiXray extends PluginBase implements Listener {
         Position position = event.getBlock();
         Level level = position.getLevel();
         if (this.worlds.contains(level.getName())) {
-            List<UpdateBlockPacket> packets = new ObjectArrayList<>();
+            List<UpdateBlockPacket> packets = Lists.newArrayList();
             for (Vector3 vector : new Vector3[]{
                     position.add(1),
                     position.add(-1),
@@ -270,33 +282,25 @@ public class AntiXray extends PluginBase implements Listener {
         return XX64.hashBytes(buffer);
     }
 
-    boolean hasCache(long hash) {
-        File file = new File(CACHE_DIR, String.valueOf(hash));
-        return file.exists() && !file.isDirectory();
-    }
-
     void createCache(long hash, byte[] buffer) {
         this.getServer().getScheduler().scheduleAsyncTask(this, new CacheWriteTask(hash, buffer));
     }
 
     byte[] readCache(long hash) {
         File file = new File(CACHE_DIR, String.valueOf(hash));
-        try {
-            if (!file.exists() || file.isDirectory()) {
-                throw new FileNotFoundException();
-            } else if (file.length() == 0) {
-                throw new EOFException();
-            }
-            try (InputStream inputStream = new InflaterInputStream(new BufferedInputStream(new FileInputStream(file)), new Inflater(true)); FastByteArrayOutputStream outputStream = new FastByteArrayOutputStream(1024)) {
-                byte[] temp = new byte[1024];
-                int length;
-                while ((length = inputStream.read(temp)) != -1) {
-                    outputStream.write(temp, 0, length);
+        if (file.exists() && file.isFile() && file.length() > 0) {
+            try {
+                try (InputStream inputStream = new InflaterInputStream(new BufferedInputStream(new FileInputStream(file)), new Inflater(true)); FastByteArrayOutputStream outputStream = new FastByteArrayOutputStream(1024)) {
+                    byte[] temp = new byte[1024];
+                    int length;
+                    while ((length = inputStream.read(temp)) != -1) {
+                        outputStream.write(temp, 0, length);
+                    }
+                    return outputStream.toByteArray();
                 }
-                return outputStream.toByteArray();
+            } catch (IOException e) {
+                this.getLogger().debug("Unable to read cache file", e);
             }
-        } catch (IOException e) {
-            this.getLogger().debug("Unable to read cache file", e);
         }
         return null;
     }

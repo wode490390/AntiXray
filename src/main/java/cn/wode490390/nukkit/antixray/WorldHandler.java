@@ -21,7 +21,10 @@ package cn.wode490390.nukkit.antixray;
 
 import cn.nukkit.Player;
 import cn.nukkit.Server;
+import cn.nukkit.block.Block;
+import cn.nukkit.blockentity.BlockEntity;
 import cn.nukkit.blockentity.BlockEntitySpawnable;
+import cn.nukkit.level.GlobalBlockPalette;
 import cn.nukkit.level.Level;
 import cn.nukkit.level.format.ChunkSection;
 import cn.nukkit.level.format.LevelProvider;
@@ -31,6 +34,7 @@ import cn.nukkit.level.format.anvil.util.BlockStorage;
 import cn.nukkit.level.format.generic.BaseFullChunk;
 import cn.nukkit.level.format.leveldb.LevelDB;
 import cn.nukkit.level.format.mcregion.McRegion;
+import cn.nukkit.level.util.PalettedBlockStorage;
 import cn.nukkit.nbt.NBTIO;
 import cn.nukkit.nbt.tag.CompoundTag;
 import cn.nukkit.network.protocol.BatchPacket;
@@ -39,9 +43,10 @@ import cn.nukkit.scheduler.AsyncTask;
 import cn.nukkit.scheduler.PluginTask;
 import cn.nukkit.utils.BinaryStream;
 import cn.nukkit.utils.ChunkException;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -54,7 +59,45 @@ import java.util.stream.Stream;
 
 public class WorldHandler extends Thread {
 
-    private static final byte[] EMPTY_SECTION = new byte[6144];
+    private static final Field F_STORAGE;
+
+    private static final byte[] EMPTY_STORAGE = new byte[1 + 32 * 4 * 4 + 1 + 1];
+    private static final byte[] EMPTY_SECTION = new byte[1 + 1 + (1 + 32 * 4 * 4 + 1 + 1) * 2];
+
+    static {
+        try {
+            Field f = Field.class.getDeclaredField("modifiers");
+            f.setAccessible(true);
+
+            F_STORAGE = cn.nukkit.level.format.anvil.ChunkSection.class.getDeclaredField("storage");
+            f.setInt(F_STORAGE, F_STORAGE.getModifiers() & ~Modifier.FINAL);
+            F_STORAGE.setAccessible(true);
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new RuntimeException(e);
+        }
+
+        EMPTY_STORAGE[0] = 3; //paletteVersion
+        EMPTY_STORAGE[513] = 2;
+
+        EMPTY_SECTION[0] = 8; //subChunkVersion
+        EMPTY_SECTION[1] = 2; //storageCount
+        EMPTY_SECTION[2] = 3;
+        EMPTY_SECTION[515] = 2;
+        EMPTY_SECTION[517] = 3;
+        EMPTY_SECTION[1030] = 2;
+    }
+
+    private static final int[] MAGIC_BLOCKS = {
+            Block.GOLD_ORE,
+            Block.IRON_ORE,
+            Block.COAL_ORE,
+            Block.LAPIS_ORE,
+            Block.DIAMOND_ORE,
+            Block.REDSTONE_ORE,
+            Block.EMERALD_ORE,
+            Block.QUARTZ_ORE
+    };
+    private static final int MAGIC_NUMBER = 0b111;
 
     private final Map<Long, Map<Integer, Player>> chunkSendQueue = Maps.newConcurrentMap();
     private final Set<Long> chunkSendTasks = Sets.newConcurrentHashSet();
@@ -66,8 +109,7 @@ public class WorldHandler extends Thread {
 
     private final AntiXray antixray;
 
-    private final int maxSectionY;
-    private final int maxSize;
+    private final int maxY;
 
     public WorldHandler(AntiXray antixray, Level level) {
         this.level = level;
@@ -76,8 +118,7 @@ public class WorldHandler extends Thread {
             this.caches = Maps.newConcurrentMap();
             this.cacheTasks = Sets.newConcurrentHashSet();
         }
-        this.maxSectionY = this.antixray.height >> 4;
-        this.maxSize = this.antixray.ores.size() - 1;
+        this.maxY = this.antixray.height << 4;
         this.setDaemon(true);
         this.setName("AntiXray");
     }
@@ -225,31 +266,6 @@ public class WorldHandler extends Thread {
             }
             this.timestamp = chunk.getChanges();
 
-            byte[] tiles = new byte[0];
-            if (!chunk.getBlockEntities().isEmpty()) {
-                List<CompoundTag> tagList = new ObjectArrayList<>();
-                chunk.getBlockEntities().values().stream()
-                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
-                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
-                try {
-                    tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
-                } catch (IOException e) {
-                    this.t = e;
-                    return;
-                }
-            }
-
-            Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
-            BinaryStream extraData = null;
-            if (!extra.isEmpty()) {
-                extraData = new BinaryStream();
-                extraData.putVarInt(extra.size());
-                for (Map.Entry<Integer, Integer> entry : extra.entrySet()) {
-                    extraData.putVarInt(entry.getKey());
-                    extraData.putLShort(entry.getValue());
-                }
-            }
-
             this.count = 0;
             ChunkSection[] sections = chunk.getSections();
             for (int i = sections.length - 1; i >= 0; i--) {
@@ -258,104 +274,135 @@ public class WorldHandler extends Thread {
                     break;
                 }
             }
-            BinaryStream stream = new BinaryStream(new byte[257]).reset(); //256 + 1
+
+            BinaryStream stream = new BinaryStream(new byte[256 + 1 + 1]).reset();
+
             for (int i = 0; i < this.count; i++) {
-                stream.putByte((byte) 0);
                 ChunkSection section = sections[i];
                 if (section.isEmpty()) {
                     stream.put(EMPTY_SECTION);
-                } else if (section.getY() <= maxSectionY) {
+                } else if (section.getY() <= antixray.height) {
+                    stream.putByte((byte) 8); // Paletted chunk because Mojang messed up the old one
+                    stream.putByte((byte) 2);
+
                     try {
-                        Field field = Field.class.getDeclaredField("modifiers");
-                        field.setAccessible(true);
-                        Field f = cn.nukkit.level.format.anvil.ChunkSection.class.getDeclaredField("storage");
-                        field.setInt(f, f.getModifiers() & ~Modifier.FINAL);
-                        f.setAccessible(true);
-                        BlockStorage storage = (BlockStorage) f.get(section);
+                        BlockStorage storage = (BlockStorage) F_STORAGE.get(section);
                         byte[] blocks = storage.getBlockIds();
                         long hash = 0;
                         if (antixray.localCache) {
                             hash = antixray.getCacheHash(blocks);
-                            if (antixray.hasCache(hash)) {
-                                stream.put(antixray.readCache(hash));
+                            byte[] cache = antixray.readCache(hash);
+                            if (cache != null) {
+                                stream.put(cache);
+                                stream.put(EMPTY_STORAGE);
                                 continue;
                             }
                         }
-                        byte[] ids = new byte[4096];
-                        System.arraycopy(blocks, 0, ids, 0, 4096);
-                        byte[] data = new byte[2048];
-                        System.arraycopy(storage.getBlockData(), 0, data, 0, 2048);
-                        int y = section.getY() << 4;
-                        for (int cx = 1; cx < 15; cx++) {
+
+                        byte[] data = storage.getBlockData();
+                        PalettedBlockStorage palette = new PalettedBlockStorage();
+
+                        for (int cx = 0; cx < 16; cx++) {
                             int tx = cx << 8;
-                            for (int cz = 1; cz < 15; cz++) {
+                            for (int cz = 0; cz < 16; cz++) {
                                 int tz = cz << 4;
                                 int xz = tx + tz;
-                                for (int cy = 1; cy < 15; cy++) {
-                                    if ((y + cy) > antixray.height) {
-                                        continue;
-                                    }
+                                for (int cy = 0; cy < 16; cy++) {
                                     int xy = tx + cy;
                                     int zy = tz + cy;
                                     int index = xz + cy;
-                                    if (!antixray.filters.contains(blocks[((cx + 1) << 8) + zy] & 0xff)
-                                            && !antixray.filters.contains(blocks[((cx - 1) << 8) + zy] & 0xff)
-                                            && !antixray.filters.contains(blocks[xy + ((cz + 1) << 4)] & 0xff)
-                                            && !antixray.filters.contains(blocks[xy + ((cz - 1) << 4)] & 0xff)
-                                            && !antixray.filters.contains(blocks[index + 1] & 0xff)
-                                            && !antixray.filters.contains(blocks[index - 1] & 0xff)) {
+
+                                    int id = -1;
+                                    int meta = 0;
+
+                                    if (cx != 0 && cx != 15 && cz != 0 && cz != 15 && cy != 0 && cy != 15
+                                            && !antixray.filter[blocks[((cx + 1) << 8) + zy] & 0xff]
+                                            && !antixray.filter[blocks[((cx - 1) << 8) + zy] & 0xff]
+                                            && !antixray.filter[blocks[xy + ((cz + 1) << 4)] & 0xff]
+                                            && !antixray.filter[blocks[xy + ((cz - 1) << 4)] & 0xff]
+                                            && !antixray.filter[blocks[index + 1] & 0xff]
+                                            && !antixray.filter[blocks[index - 1] & 0xff]) {
                                         if (antixray.mode) {
-                                            ids[index] = (byte) (antixray.ores.getInt(index % maxSize) & 0xff);
-                                        } else if (antixray.ores.contains(blocks[index] & 0xff)) {
+                                            id = MAGIC_BLOCKS[index & MAGIC_NUMBER];
+                                        } else if (antixray.ore[blocks[index] & 0xff]) {
                                             switch (level.getDimension()) {
                                                 case Level.DIMENSION_OVERWORLD:
-                                                    ids[index] = (byte) (antixray.fake_o & 0xff);
+                                                    id = antixray.fake_o;
                                                     break;
                                                 case Level.DIMENSION_NETHER:
-                                                    ids[index] = (byte) (antixray.fake_n & 0xff);
+                                                    id = antixray.fake_n;
                                                     break;
                                                 case Level.DIMENSION_THE_END:
                                                 default:
-                                                    ids[index] = 0;
+                                                    id = 0;
                                                     break;
                                             }
-                                        } else {
-                                            continue;
-                                        }
-                                        int halfIndex = index / 2;
-                                        byte nibbleData = data[halfIndex];
-                                        boolean flag = (index & 1) == 0;
-                                        if ((flag ? nibbleData & 0xf : (nibbleData & 0xf0) >>> 4) != 0) {
-                                            data[halfIndex] = flag ? (byte) (nibbleData & 0xf0) : (byte) (nibbleData & 0xf);
                                         }
                                     }
+
+                                    if (id == -1) {
+                                        id = blocks[index] & 0xff;
+
+                                        byte nibbleData = data[index >>> 1];
+                                        meta = (index & 1) == 0 ? nibbleData & 0xf : (nibbleData & 0xf0) >>> 4;
+                                    }
+
+                                    palette.setBlock(index, GlobalBlockPalette.getOrCreateRuntimeId(id, meta));
                                 }
                             }
                         }
-                        byte[] merged = new byte[6144];
-                        System.arraycopy(ids, 0, merged, 0, 4096);
-                        System.arraycopy(data, 0, merged, 4096, 2048);
-                        stream.put(merged);
+
+                        BinaryStream paletted = new BinaryStream(new byte[1 + 32 * 4 * 4 + 1 + 1]).reset();
+                        palette.writeTo(paletted);
+                        byte[] buffer = paletted.getBuffer();
+
+                        stream.put(buffer);
+                        stream.put(EMPTY_STORAGE);
+
                         if (antixray.localCache) {
-                            antixray.createCache(hash, merged);
+                            antixray.createCache(hash, buffer);
                         }
                     } catch (Exception e) {
-                        stream.put(section.getBytes());
+                        stream.reset();
+                        for (ChunkSection subChunk : sections) {
+                            subChunk.writeTo(stream);
+                        }
+                        break;
                     }
                 } else {
-                    stream.put(section.getBytes());
+                    section.writeTo(stream);
                 }
             }
-            byte[] merged = new byte[257]; //256 + 1
+
+            byte[] merged = new byte[256 + 1];
             System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 0, 256);
             stream.put(merged);
-            if (extraData != null) {
-                stream.put(extraData.getBuffer());
-            } else {
-                stream.putVarInt(0); //1
+
+            Map<Integer, Integer> extraData = chunk.getBlockExtraDataArray();
+            stream.putUnsignedVarInt(extraData.size()); //1
+            if (!extraData.isEmpty()) {
+                for (Map.Entry<Integer, Integer> entry : extraData.entrySet()) {
+                    stream.putVarInt(entry.getKey());
+                    stream.putLShort(entry.getValue());
+                }
             }
-            if (tiles.length != 0) {
-                stream.put(tiles);
+
+            Map<Long, BlockEntity> blockEntities = chunk.getBlockEntities();
+            if (!blockEntities.isEmpty()) {
+                List<CompoundTag> tagList = Lists.newArrayList();
+                blockEntities.values().stream()
+                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
+                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
+                if (!tagList.isEmpty()) {
+                    byte[] tiles;
+                    try {
+                        tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
+                    } catch (IOException e) {
+                        this.t = e;
+                        return;
+                    }
+                    stream.put(tiles);
+                }
             }
 
             byte[] payload = stream.getBuffer();
@@ -400,39 +447,15 @@ public class WorldHandler extends Thread {
             }
             this.timestamp = chunk.getChanges();
 
-            byte[] tiles = new byte[0];
-            if (!chunk.getBlockEntities().isEmpty()) {
-                List<CompoundTag> tagList = new ObjectArrayList<>();
-                chunk.getBlockEntities().values().stream()
-                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
-                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
-                try {
-                    tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN);
-                } catch (IOException e) {
-                    this.t = e;
-                    return;
-                }
-            }
-
-            Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
-            BinaryStream extraData = null;
-            if (!extra.isEmpty()) {
-                extraData = new BinaryStream();
-                extraData.putLInt(extra.size());
-                for (Integer key : extra.values()) {
-                    extraData.putLInt(key);
-                    extraData.putLShort(extra.get(key));
-                }
-            }
-
-            byte[] merged = new byte[82432]; //32768 + 16384 + 16384 + 16384 + 256 + 256
+            byte[] merged = new byte[1 + 32768 + 16384 + 16384 + 16384 + 256 + 256 + 4];
             byte[] blocks = chunk.getBlockIdArray();
             boolean hit = false;
             long hash = 0;
             if (antixray.localCache) {
                 hash = antixray.getCacheHash(blocks);
-                if (antixray.hasCache(hash)) {
-                    System.arraycopy(antixray.readCache(hash), 0, merged, 0, 49152);
+                byte[] cache = antixray.readCache(hash);
+                if (cache != null) {
+                    System.arraycopy(cache, 0, merged, 1, 32768 + 16384);
                     hit = true;
                 }
             }
@@ -449,29 +472,29 @@ public class WorldHandler extends Thread {
                         int dtz = cz << 6;
                         int xz = tx | tz;
                         int dxz = dtx | dtz;
-                        for (int y = 1; y <= antixray.height && y < 255; y++) {
+                        for (int y = 1; y < maxY && y < 255; y++) {
                             int xy = tx | y;
                             int zy = tz | y;
-                            if (!antixray.filters.contains(blocks[((cx + 1) << 11) | zy] & 0xff)
-                                    && !antixray.filters.contains(blocks[((cx - 1) << 11) | zy] & 0xff)
-                                    && !antixray.filters.contains(blocks[xy | ((cz + 1) << 7)] & 0xff)
-                                    && !antixray.filters.contains(blocks[xy | ((cz - 1) << 7)] & 0xff)
-                                    && !antixray.filters.contains(blocks[xz | (y + 1)] & 0xff)
-                                    && !antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
+                            if (!antixray.filter[blocks[((cx + 1) << 11) | zy] & 0xff]
+                                    && !antixray.filter[blocks[((cx - 1) << 11) | zy] & 0xff]
+                                    && !antixray.filter[blocks[xy | ((cz + 1) << 7)] & 0xff]
+                                    && !antixray.filter[blocks[xy | ((cz - 1) << 7)] & 0xff]
+                                    && !antixray.filter[blocks[xz | (y + 1)] & 0xff]
+                                    && !antixray.filter[blocks[xz | (y - 1)] & 0xff]) {
                                 int index = xz | y;
                                 if (antixray.mode) {
-                                    blocks[index] = (byte) (antixray.ores.getInt(index % maxSize) & 0xff);
-                                } else if (antixray.ores.contains(blocks[index] & 0xff)) {
+                                    ids[index] = (byte) (MAGIC_BLOCKS[index & MAGIC_NUMBER] & 0xff);
+                                } else if (antixray.ore[blocks[index] & 0xff]) {
                                     switch (level.getDimension()) {
                                         case Level.DIMENSION_OVERWORLD:
-                                            blocks[index] = (byte) (antixray.fake_o & 0xff);
+                                            ids[index] = (byte) (antixray.fake_o & 0xff);
                                             break;
                                         case Level.DIMENSION_NETHER:
-                                            blocks[index] = (byte) (antixray.fake_n & 0xff);
+                                            ids[index] = (byte) (antixray.fake_n & 0xff);
                                             break;
                                         case Level.DIMENSION_THE_END:
                                         default:
-                                            blocks[index] = 0;
+                                            ids[index] = 0;
                                             break;
                                     }
                                 } else {
@@ -487,26 +510,45 @@ public class WorldHandler extends Thread {
                         }
                     }
                 }
-                System.arraycopy(blocks, 0, merged, 0, 32768);
-                System.arraycopy(data, 0, merged, 32768, 16384);
+                System.arraycopy(ids, 0, merged, 1, 32768);
+                System.arraycopy(data, 0, merged, 32769, 16384);
                 if (antixray.localCache) {
-                    byte[] cache = new byte[49152];
-                    System.arraycopy(merged, 0, cache, 0, 49152);
+                    byte[] cache = new byte[32768 + 16384];
+                    System.arraycopy(merged, 1, cache, 0, 49152);
                     antixray.createCache(hash, cache);
                 }
             }
-            System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49152, 16384);
-            System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65536, 16384);
-            System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81920, 256);
-            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82176, 256);
+            System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49153, 16384);
+            System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65537, 16384);
+            System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81921, 256);
+            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82177, 256);
             BinaryStream stream = new BinaryStream(merged);
-            if (extraData != null) {
-                stream.put(extraData.getBuffer());
-            } else {
-                stream.putLInt(0); //4
+
+            Map<Integer, Integer> extraData = chunk.getBlockExtraDataArray();
+            stream.putLInt(extraData.size()); //4
+            if (!extraData.isEmpty()) {
+                for (Map.Entry<Integer, Integer> entry : extraData.entrySet()) {
+                    stream.putLInt(entry.getKey());
+                    stream.putLShort(entry.getValue());
+                }
             }
-            if (tiles.length != 0) {
-                stream.put(tiles);
+
+            Map<Long, BlockEntity> blockEntities = chunk.getBlockEntities();
+            if (!blockEntities.isEmpty()) {
+                List<CompoundTag> tagList = Lists.newArrayList();
+                blockEntities.values().stream()
+                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
+                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
+                if (!tagList.isEmpty()) {
+                    byte[] tiles;
+                    try {
+                        tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN);
+                    } catch (IOException e) {
+                        this.t = e;
+                        return;
+                    }
+                    stream.put(tiles);
+                }
             }
 
             byte[] payload = stream.getBuffer();
@@ -551,39 +593,15 @@ public class WorldHandler extends Thread {
             }
             this.timestamp = chunk.getChanges();
 
-            byte[] tiles = new byte[0];
-            if (!chunk.getBlockEntities().isEmpty()) {
-                List<CompoundTag> tagList = new ObjectArrayList<>();
-                chunk.getBlockEntities().values().stream()
-                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
-                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
-                try {
-                    tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN, true);
-                } catch (IOException e) {
-                    this.t = e;
-                    return;
-                }
-            }
-
-            Map<Integer, Integer> extra = chunk.getBlockExtraDataArray();
-            BinaryStream extraData = null;
-            if (!extra.isEmpty()) {
-                extraData = new BinaryStream();
-                extraData.putLInt(extra.size());
-                for (Map.Entry<Integer, Integer> entry : extra.entrySet()) {
-                    extraData.putLInt(entry.getKey());
-                    extraData.putLShort(entry.getValue());
-                }
-            }
-
-            byte[] merged = new byte[82432];
+            byte[] merged = new byte[1 + 32768 + 16384 + 16384 + 16384 + 256 + 256 + 4];
             byte[] blocks = chunk.getBlockIdArray();
             boolean hit = false;
             long hash = 0;
             if (antixray.localCache) {
                 hash = antixray.getCacheHash(blocks);
-                if (antixray.hasCache(hash)) {
-                    System.arraycopy(antixray.readCache(hash), 0, merged, 0, 49152);
+                byte[] cache = antixray.readCache(hash);
+                if (cache != null) {
+                    System.arraycopy(cache, 0, merged, 1, 32768 + 16384);
                     hit = true;
                 }
             }
@@ -600,29 +618,29 @@ public class WorldHandler extends Thread {
                         int dtz = cz << 6;
                         int xz = tx | tz;
                         int dxz = dtx | dtz;
-                        for (int y = 1; y <= antixray.height && y < 255; y++) {
+                        for (int y = 1; y < maxY && y < 255; y++) {
                             int xy = tx | y;
                             int zy = tz | y;
-                            if (!antixray.filters.contains(blocks[((cx + 1) << 11) | zy] & 0xff)
-                                    && !antixray.filters.contains(blocks[((cx - 1) << 11) | zy] & 0xff)
-                                    && !antixray.filters.contains(blocks[xy | ((cz + 1) << 7)] & 0xff)
-                                    && !antixray.filters.contains(blocks[xy | ((cz - 1) << 7)] & 0xff)
-                                    && !antixray.filters.contains(blocks[xz | (y + 1)] & 0xff)
-                                    && !antixray.filters.contains(blocks[xz | (y - 1)] & 0xff)) {
+                            if (!antixray.filter[blocks[((cx + 1) << 11) | zy] & 0xff]
+                                    && !antixray.filter[blocks[((cx - 1) << 11) | zy] & 0xff]
+                                    && !antixray.filter[blocks[xy | ((cz + 1) << 7)] & 0xff]
+                                    && !antixray.filter[blocks[xy | ((cz - 1) << 7)] & 0xff]
+                                    && !antixray.filter[blocks[xz | (y + 1)] & 0xff]
+                                    && !antixray.filter[blocks[xz | (y - 1)] & 0xff]) {
                                 int index = xz | y;
                                 if (antixray.mode) {
-                                    blocks[index] = (byte) (antixray.ores.getInt(index % maxSize) & 0xff);
-                                } else if (antixray.ores.contains(blocks[index] & 0xff)) {
+                                    ids[index] = (byte) (MAGIC_BLOCKS[index & MAGIC_NUMBER] & 0xff);
+                                } else if (antixray.ore[blocks[index] & 0xff]) {
                                     switch (level.getDimension()) {
                                         case Level.DIMENSION_OVERWORLD:
-                                            blocks[index] = (byte) (antixray.fake_o & 0xff);
+                                            ids[index] = (byte) (antixray.fake_o & 0xff);
                                             break;
                                         case Level.DIMENSION_NETHER:
-                                            blocks[index] = (byte) (antixray.fake_n & 0xff);
+                                            ids[index] = (byte) (antixray.fake_n & 0xff);
                                             break;
                                         case Level.DIMENSION_THE_END:
                                         default:
-                                            blocks[index] = 0;
+                                            ids[index] = 0;
                                             break;
                                     }
                                 } else {
@@ -638,26 +656,45 @@ public class WorldHandler extends Thread {
                         }
                     }
                 }
-                System.arraycopy(blocks, 0, merged, 0, 32768);
-                System.arraycopy(data, 0, merged, 32768, 16384);
+                System.arraycopy(ids, 0, merged, 1, 32768);
+                System.arraycopy(data, 0, merged, 32769, 16384);
                 if (antixray.localCache) {
-                    byte[] cache = new byte[49152];
-                    System.arraycopy(merged, 0, cache, 0, 49152);
+                    byte[] cache = new byte[32768 + 16384];
+                    System.arraycopy(merged, 1, cache, 0, 49152);
                     antixray.createCache(hash, cache);
                 }
             }
-            System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49152, 16384);
-            System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65536, 16384);
-            System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81920, 256);
-            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82176, 256);
+            System.arraycopy(chunk.getBlockSkyLightArray(), 0, merged, 49153, 16384);
+            System.arraycopy(chunk.getBlockLightArray(), 0, merged, 65537, 16384);
+            System.arraycopy(chunk.getHeightMapArray(), 0, merged, 81921, 256);
+            System.arraycopy(chunk.getBiomeIdArray(), 0, merged, 82177, 256);
             BinaryStream stream = new BinaryStream(merged);
-            if (extraData != null) {
-                stream.put(extraData.getBuffer());
-            } else {
-                stream.putLInt(0); //4
+
+            Map<Integer, Integer> extraData = chunk.getBlockExtraDataArray();
+            stream.putLInt(extraData.size()); //4
+            if (!extraData.isEmpty()) {
+                for (Map.Entry<Integer, Integer> entry : extraData.entrySet()) {
+                    stream.putLInt(entry.getKey());
+                    stream.putLShort(entry.getValue());
+                }
             }
-            if (tiles.length != 0) {
-                stream.put(tiles);
+
+            Map<Long, BlockEntity> blockEntities = chunk.getBlockEntities();
+            if (!blockEntities.isEmpty()) {
+                List<CompoundTag> tagList = Lists.newArrayList();
+                blockEntities.values().stream()
+                        .filter(blockEntity -> blockEntity instanceof BlockEntitySpawnable)
+                        .forEach(blockEntity -> tagList.add(((BlockEntitySpawnable) blockEntity).getSpawnCompound()));
+                if (!tagList.isEmpty()) {
+                    byte[] tiles;
+                    try {
+                        tiles = NBTIO.write(tagList, ByteOrder.LITTLE_ENDIAN);
+                    } catch (IOException e) {
+                        this.t = e;
+                        return;
+                    }
+                    stream.put(tiles);
+                }
             }
 
             byte[] payload = stream.getBuffer();
