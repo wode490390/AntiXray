@@ -24,11 +24,6 @@ If you love this plugin, please star it on [GitHub](https://github.com/wode49039
 - [Releases](https://github.com/wode490390/AntiXray/releases)
 - [Snapshots](https://circleci.com/gh/wode490390/AntiXray)
 
-## Permissions
-| Permission | Description | Default |
-| - | - | - |
-| antixray.whitelist | Allows a player to cheat with X-Ray | OP |
-
 ## Configurations
 
 <details>
@@ -38,9 +33,7 @@ If you love this plugin, please star it on [GitHub](https://github.com/wode49039
 # The smaller the value, the higher the performance (1~16)
 scan-chunk-height-limit: 4
 # Save a serialized copy of the chunk in memory for faster sending
-memory-cache: true
-# Save a serialized copy of the chunk in disk for faster sending
-local-cache: true
+memory-cache: false
 # Set this to false to use hidden mode
 obfuscator-mode: true
 # The fake block is used to replace ores in different dimensions (hidden mode only)

@@ -6,7 +6,3 @@ website: "http://wode490390.cn/"
 version: "${pom.version}"
 api: ["1.0.9"]
 load: POSTWORLD
-permissions:
-  antixray.whitelist:
-    description: "Allows a player to cheat with X-Ray"
-    default: op

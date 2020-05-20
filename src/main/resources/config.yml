@@ -1,9 +1,7 @@
 # The smaller the value, the higher the performance (1~16)
 scan-chunk-height-limit: 4
 # Save a serialized copy of the chunk in memory for faster sending
-memory-cache: true
-# Save a serialized copy of the chunk in disk for faster sending
-local-cache: true
+memory-cache: false
 # Set this to false to use hidden mode
 obfuscator-mode: true
 # The fake block is used to replace ores in different dimensions (hidden mode only)
