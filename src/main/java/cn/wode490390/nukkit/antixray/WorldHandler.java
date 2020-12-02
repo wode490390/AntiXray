@@ -30,6 +30,8 @@ import cn.nukkit.level.format.anvil.Anvil;
 import cn.nukkit.level.format.anvil.Chunk;
 import cn.nukkit.level.format.anvil.util.BlockStorage;
 import cn.nukkit.level.format.generic.BaseFullChunk;
+import cn.nukkit.level.util.BitArrayVersion;
+import cn.nukkit.level.util.PalettedBlockStorage;
 import cn.nukkit.nbt.NBTIO;
 import cn.nukkit.nbt.tag.CompoundTag;
 import cn.nukkit.network.protocol.BatchPacket;
@@ -62,8 +64,8 @@ public class WorldHandler extends PluginTask<Plugin> {
     private static final byte[] PALETTE_HEADER_V4 = new byte[]{(4 << 1) | 1};
     private static final byte[] BORDER_BLOCKS_DATA = new byte[]{0}; // size - Education Edition only
     private static final byte[] SECTION_HEADER = new byte[]{8, 2}; // subChunkVersion + storageCount
-    private static final byte[] EMPTY_STORAGE = new byte[1 + 32 * 4 * 4 + 1 + 1];
-    private static final byte[] EMPTY_SECTION = new byte[1 + 1 + (1 + 32 * 4 * 4 + 1 + 1) * 2];
+    private static final byte[] EMPTY_STORAGE;
+    private static final byte[] EMPTY_SECTION;
 
     static {
         try {
@@ -77,15 +79,15 @@ public class WorldHandler extends PluginTask<Plugin> {
             throw new RuntimeException(e);
         }
 
-        EMPTY_STORAGE[0] = 3; //paletteVersion
-        EMPTY_STORAGE[513] = 2;
+        BinaryStream stream = new BinaryStream();
+        PalettedBlockStorage emptyStorage = new PalettedBlockStorage(BitArrayVersion.V1);
+        emptyStorage.writeTo(stream);
+        EMPTY_STORAGE = stream.getBuffer();
 
-        EMPTY_SECTION[0] = 8; //subChunkVersion
-        EMPTY_SECTION[1] = 2; //storageCount
-        EMPTY_SECTION[2] = 3;
-        EMPTY_SECTION[515] = 2;
-        EMPTY_SECTION[517] = 3;
-        EMPTY_SECTION[1030] = 2;
+        stream.reset().put(SECTION_HEADER);
+        stream.put(EMPTY_STORAGE);
+        stream.put(EMPTY_STORAGE);
+        EMPTY_SECTION = stream.getBuffer();
     }
 
     private static final int[] MAGIC_BLOCKS = {
@@ -99,6 +101,8 @@ public class WorldHandler extends PluginTask<Plugin> {
             Block.QUARTZ_ORE
     };
     private static final int MAGIC_NUMBER = 0b111;
+
+    private static final int AIR_BLOCK_RUNTIME_ID = GlobalBlockPalette.getOrCreateRuntimeId(Block.AIR, 0);
 
     private final Long2ObjectOpenHashMap<Int2ObjectMap<Player>> chunkSendQueue = new Long2ObjectOpenHashMap<>();
 
@@ -200,7 +204,7 @@ public class WorldHandler extends PluginTask<Plugin> {
                         byte[] header = PALETTE_HEADER_V4;
                         IntList palette = new IntArrayList(16) {
                             {
-                                this.size++; // Air is at the start of every palette
+                                this.a[this.size++] = AIR_BLOCK_RUNTIME_ID; // Air is at the start of every palette
                             }
                         };
 
